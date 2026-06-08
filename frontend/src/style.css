@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { @apply bg-surface text-gray-200; }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-100 border border-surface-300 rounded-lg;
+  }
+  .card-sm {
+    @apply bg-surface-200 border border-surface-300 rounded;
+  }
+  .bull { @apply text-bull; }
+  .bear { @apply text-bear; }
+  .neutral-color { @apply text-neutral; }
+  .badge-bull { @apply bg-bull/10 text-bull border border-bull/30 text-xs px-2 py-0.5 rounded-full font-mono; }
+  .badge-bear { @apply bg-bear/10 text-bear border border-bear/30 text-xs px-2 py-0.5 rounded-full font-mono; }
+  .badge-neutral { @apply bg-neutral/10 text-neutral border border-neutral/30 text-xs px-2 py-0.5 rounded-full font-mono; }
+  .price-up { @apply text-bull font-mono font-semibold; }
+  .price-down { @apply text-bear font-mono font-semibold; }
+  .label { @apply text-xs text-gray-400 uppercase tracking-wider font-medium; }
+  .mono { @apply font-mono; }
+  .glow-accent { text-shadow: 0 0 20px rgba(0, 212, 255, 0.5); }
+  .glow-bull { text-shadow: 0 0 20px rgba(0, 255, 136, 0.5); }
+}
+
+/* Apex Charts dark theme overrides */
+.apexcharts-canvas { background: transparent !important; }
+.apexcharts-tooltip { background: #21262d !important; border-color: #373e47 !important; }
+.apexcharts-tooltip-title { background: #2d333b !important; border-color: #373e47 !important; }
+.apexcharts-menu { background: #21262d !important; border-color: #373e47 !important; }
+.apexcharts-menu-item:hover { background: #2d333b !important; }
+
+/* Ticker animation */
+.ticker-wrap { overflow: hidden; }
+.ticker-content { display: inline-flex; animation: ticker 60s linear infinite; white-space: nowrap; }
+.ticker-content:hover { animation-play-state: paused; }
+@keyframes ticker { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+
+/* Pulse dot */
+.live-dot {
+  @apply inline-block w-2 h-2 rounded-full bg-bull;
+  animation: livePulse 2s ease-in-out infinite;
+}
+@keyframes livePulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.4); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(0, 255, 136, 0); }
+}
+
+/* Scrollable panels */
+.panel-scroll { overflow-y: auto; scrollbar-width: thin; }
+
+/* Signal bar */
+.signal-bar {
+  @apply h-1.5 rounded-full transition-all duration-500;
+}

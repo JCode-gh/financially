@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Environment & secrets
+.env
+backend/.env
+*.local
+
+# Build output
+dist/
+build/
+
+# Runtime data
+backend/data/history/
+backend/data/*.db
+backend/data/*.db-*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Vite
+frontend/node_modules/.vite/
