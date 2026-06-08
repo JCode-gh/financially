@@ -8,7 +8,7 @@
           <span class="text-gray-500 text-xs ml-2 hidden lg:inline">{{ quote?.name }}</span>
         </div>
         <div v-if="quote" class="flex items-center gap-2 flex-shrink-0">
-          <span class="font-mono text-base font-bold text-white">${{ (quote.price || 0).toFixed(2) }}</span>
+          <span class="font-mono text-base font-bold text-white" :class="priceFlash">${{ (quote.price || 0).toFixed(2) }}</span>
           <span class="font-mono text-sm font-semibold" :class="(quote.changePct || 0) >= 0 ? 'text-bull' : 'text-bear'">
             {{ (quote.changePct || 0) >= 0 ? '+' : '' }}{{ (quote.changePct || 0).toFixed(2) }}%
           </span>
@@ -110,9 +110,12 @@ const timeframes = [
 ];
 const activeTf = ref('3M');
 const legend = ref(null);
+const priceFlash = ref('');
+let prevPrice = null;
 
 const chartContainer = ref(null);
 let chart, candleSeries, volumeSeries, sma20Series, sma50Series, ro;
+let lastBar = null; // most recent candle, mutated live by streamed trades
 
 const chartError = computed(() => {
   if (!loading.value && marketStore.historicalData.length === 0) {
@@ -191,6 +194,7 @@ function renderData() {
   // SMA overlays only meaningful on daily timeframes
   sma20Series.setData(isIntraday ? [] : smaLine(candles, 20));
   sma50Series.setData(isIntraday ? [] : smaLine(candles, 50));
+  lastBar = candles.length ? { ...candles[candles.length - 1] } : null;
   chart.timeScale().fitContent();
 }
 
@@ -226,6 +230,26 @@ onUnmounted(() => { ro?.disconnect(); chart?.remove(); chart = null; });
 
 // Re-render whenever the store's candle data changes (symbol switch, timeframe, refresh)
 watch(() => marketStore.historicalData, renderData, { deep: false });
+
+// Live: nudge the last candle on each streamed trade for the charted symbol
+watch(() => marketStore.liveTick, (tick) => {
+  if (!tick || !candleSeries || !lastBar) return;
+  if (tick.symbol !== (quote.value?.symbol || props.symbol)) return;
+  lastBar.close = tick.price;
+  if (tick.price > lastBar.high) lastBar.high = tick.price;
+  if (tick.price < lastBar.low) lastBar.low = tick.price;
+  candleSeries.update({ ...lastBar });
+});
+
+// Flash the header price green/red on each live change
+watch(() => quote.value?.price, (p) => {
+  if (p == null) return;
+  if (prevPrice != null && p !== prevPrice) {
+    priceFlash.value = p > prevPrice ? 'flash-up' : 'flash-down';
+    setTimeout(() => { priceFlash.value = ''; }, 600);
+  }
+  prevPrice = p;
+});
 
 const rsiColor = computed(() => {
   const r = indicators.value?.rsi;

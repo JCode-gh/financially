@@ -7,6 +7,7 @@ import newsRoutes from './routes/news.js';
 import stockRoutes from './routes/stocks.js';
 import predictionRoutes from './routes/predictions.js';
 import { evaluatePredictions } from './jobs/predictionEvaluator.js';
+import { initLiveStream } from './services/liveStream.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -43,9 +44,12 @@ setTimeout(() => {
 }, 5000);
 
 initDB();
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n🚀 Financially backend running on http://localhost:${PORT}`);
   console.log(`   API health: http://localhost:${PORT}/api/health`);
   console.log(`   Finnhub: ${process.env.FINNHUB_API_KEY ? '✅' : '❌ (add FINNHUB_API_KEY to .env)'}`);
   console.log(`   NewsAPI: ${process.env.NEWS_API_KEY ? '✅' : '❌ (add NEWS_API_KEY to .env)'}`);
 });
+
+// Attach the live trade-tick WebSocket proxy to the same HTTP server
+initLiveStream(server);

@@ -13,7 +13,7 @@
       </button>
     </div>
 
-    <div ref="scrollEl" class="panel-scroll flex-1">
+    <div ref="scrollEl" class="panel-scroll flex-1 overflow-y-auto">
       <!-- Empty state -->
       <div v-if="!prediction && !loading" class="flex flex-col items-center justify-center h-20 text-gray-500 text-xs gap-1.5">
         <svg class="w-6 h-6 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -23,7 +23,15 @@
       </div>
 
       <div v-else-if="prediction">
-        <!-- Horizon predictions — compact row layout -->
+        <!-- Trend + rationale banner -->
+        <div class="px-2 pt-2 flex items-center gap-2 text-xs font-mono">
+          <span class="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide font-bold flex-shrink-0" :class="trendBadge">
+            {{ prediction.trend?.label || '—' }}
+          </span>
+          <span class="text-gray-400 truncate">{{ leadRationale }}</span>
+        </div>
+
+        <!-- Horizon predictions with price targets -->
         <div class="flex gap-1.5 p-2">
           <div
             v-for="p in prediction.predictions"
@@ -32,12 +40,14 @@
             :class="p.prediction === 'UP' ? 'border-bull/30' : p.prediction === 'DOWN' ? 'border-bear/30' : 'border-neutral/30'"
           >
             <div class="text-xs text-gray-500 font-mono mb-0.5">{{ p.horizon }}</div>
-            <div class="text-xl font-bold leading-none" :class="predColor(p.prediction)">
-              {{ predIcon(p.prediction) }}
+            <div class="text-base font-bold leading-none font-mono" :class="predColor(p.prediction)">
+              {{ predIcon(p.prediction) }} {{ p.prediction }}
             </div>
-            <div class="text-xs font-mono font-semibold mt-0.5" :class="predColor(p.prediction)">
-              {{ p.prediction }}
+            <div class="text-sm font-mono font-bold mt-1" :class="(p.expectedMovePct ?? 0) >= 0 ? 'text-bull' : 'text-bear'">
+              {{ (p.expectedMovePct ?? 0) >= 0 ? '+' : '' }}{{ (p.expectedMovePct ?? 0).toFixed(1) }}%
             </div>
+            <div class="text-xs font-mono text-gray-300">→ ${{ (p.targetPrice ?? 0).toFixed(2) }}</div>
+            <div v-if="p.low != null" class="text-[10px] font-mono text-gray-600 mt-0.5">${{ p.low.toFixed(0) }}–${{ p.high.toFixed(0) }}</div>
             <!-- Confidence bar -->
             <div class="mt-1.5 h-1 bg-surface-300 rounded-full overflow-hidden">
               <div
@@ -46,7 +56,7 @@
                 :style="{ width: (p.confidence * 100) + '%' }"
               ></div>
             </div>
-            <div class="text-xs font-mono text-gray-500 mt-0.5">{{ (p.confidence * 100).toFixed(0) }}%</div>
+            <div class="text-[10px] font-mono text-gray-500 mt-0.5">{{ (p.confidence * 100).toFixed(0) }}% conf</div>
           </div>
         </div>
 
@@ -93,7 +103,6 @@
               <span class="w-10 text-right text-xs" :class="signal > 0 ? 'text-bull' : signal < 0 ? 'text-bear' : 'text-gray-500'">
                 {{ signal > 0 ? '+' : '' }}{{ signal.toFixed(2) }}
               </span>
-              <!-- Weight -->
               <span class="w-7 text-right text-gray-600 text-xs">
                 {{ prediction.weights?.[key] ? (prediction.weights[key] * 100).toFixed(0) + '%' : '' }}
               </span>
@@ -118,6 +127,15 @@ const prediction = computed(() => predictionStore.currentPrediction);
 const loading = computed(() => predictionStore.generating);
 const scrollEl = ref(null);
 
+const leadRationale = computed(() => prediction.value?.predictions?.[0]?.rationale || '');
+
+const trendBadge = computed(() => {
+  const d = prediction.value?.trend?.direction;
+  if (d > 0) return 'bg-bull/20 text-bull';
+  if (d < 0) return 'bg-bear/20 text-bear';
+  return 'bg-neutral/20 text-neutral';
+});
+
 const displaySignals = computed(() => {
   const s = prediction.value?.signals;
   if (!s) return {};
@@ -136,7 +154,6 @@ async function generate() {
   }
 }
 
-// Scroll to top when prediction changes
 watch(prediction, async () => {
   await nextTick();
   if (scrollEl.value) scrollEl.value.scrollTop = 0;

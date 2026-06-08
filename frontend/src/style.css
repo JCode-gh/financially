@@ -27,13 +27,6 @@
   .glow-bull { text-shadow: 0 0 20px rgba(0, 255, 136, 0.5); }
 }
 
-/* Apex Charts dark theme overrides */
-.apexcharts-canvas { background: transparent !important; }
-.apexcharts-tooltip { background: #21262d !important; border-color: #373e47 !important; }
-.apexcharts-tooltip-title { background: #2d333b !important; border-color: #373e47 !important; }
-.apexcharts-menu { background: #21262d !important; border-color: #373e47 !important; }
-.apexcharts-menu-item:hover { background: #2d333b !important; }
-
 /* Ticker animation */
 .ticker-wrap { overflow: hidden; }
 .ticker-content { display: inline-flex; animation: ticker 60s linear infinite; white-space: nowrap; }
@@ -49,6 +42,13 @@
   0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.4); }
   50% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(0, 255, 136, 0); }
 }
+.idle-dot { @apply inline-block w-2 h-2 rounded-full bg-gray-600; }
+
+/* Brief price flash when a live tick changes the value */
+.flash-up { animation: flashUp 0.6s ease-out; }
+.flash-down { animation: flashDown 0.6s ease-out; }
+@keyframes flashUp { 0% { color: #00ff88; text-shadow: 0 0 12px rgba(0,255,136,0.7); } 100% {} }
+@keyframes flashDown { 0% { color: #ff4444; text-shadow: 0 0 12px rgba(255,68,68,0.7); } 100% {} }
 
 /* Scrollable panels */
 .panel-scroll { overflow-y: auto; scrollbar-width: thin; }

@@ -17,6 +17,10 @@ export const useMarketStore = defineStore('market', () => {
   const loading = ref({ market: false, watchlist: false, historical: false, quote: false });
   const lastUpdated = ref(null);
   const error = ref(null);
+  const liveTick = ref(null);        // latest streamed trade { symbol, price, ts }
+  const liveConnected = ref(false);
+  let liveWs = null;
+  let liveReconnect = null;
 
   const selectedStock = computed(() =>
     watchlistData.value.find(s => s.symbol === selectedSymbol.value) || selectedQuote.value
@@ -56,15 +60,18 @@ export const useMarketStore = defineStore('market', () => {
     }
   }
 
+  let histReqId = 0; // guards against out-of-order responses (slow fetch landing after a newer one)
   async function fetchHistorical(symbol, opts = {}) {
     if (typeof opts === 'number') opts = { days: opts }; // tolerate legacy numeric arg
     const days = opts.days ?? 63;
     const interval = opts.interval ?? chartInterval.value;
     chartInterval.value = interval;
+    const reqId = ++histReqId;
     loading.value.historical = true;
     // Don't clear historicalData here — keep previous candles visible while loading
     try {
       const res = await stocksApi.historical(symbol || selectedSymbol.value, days, interval);
+      if (reqId !== histReqId) return; // a newer request superseded this one — ignore stale response
       if (res.data.success === false) {
         error.value = res.data.error || 'Chart data unavailable';
       } else {
@@ -72,9 +79,9 @@ export const useMarketStore = defineStore('market', () => {
         error.value = null;
       }
     } catch (e) {
-      error.value = 'Failed to load chart data';
+      if (reqId === histReqId) error.value = 'Failed to load chart data';
     } finally {
-      loading.value.historical = false;
+      if (reqId === histReqId) loading.value.historical = false;
     }
   }
 
@@ -101,6 +108,7 @@ export const useMarketStore = defineStore('market', () => {
   async function selectSymbol(symbol) {
     selectedSymbol.value = symbol;
     historicalData.value = []; // Clear when changing symbol, not when changing range
+    syncLive(); // stream the newly selected symbol
     // Use current chartRange to determine days
     const rangeDays = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365 };
     const days = rangeDays[chartRange.value] || 90;
@@ -111,12 +119,66 @@ export const useMarketStore = defineStore('market', () => {
     if (!watchlistSymbols.value.includes(symbol)) {
       watchlistSymbols.value.push(symbol);
       fetchWatchlist();
+      syncLive();
     }
   }
 
   function removeFromWatchlist(symbol) {
     watchlistSymbols.value = watchlistSymbols.value.filter(s => s !== symbol);
     watchlistData.value = watchlistData.value.filter(s => s.symbol !== symbol);
+    syncLive();
+  }
+
+  // ---- Live streaming (Finnhub trades via backend /ws proxy) ----
+  function liveSymbols() {
+    const syms = new Set(watchlistSymbols.value.map(s => s.toUpperCase()));
+    if (selectedSymbol.value) syms.add(selectedSymbol.value.toUpperCase());
+    for (const m of marketData.value) if (m.type === 'crypto' && m.symbol) syms.add(m.symbol.toUpperCase());
+    return [...syms];
+  }
+
+  function syncLive() {
+    if (liveWs && liveWs.readyState === 1) {
+      liveWs.send(JSON.stringify({ action: 'set', symbols: liveSymbols() }));
+    }
+  }
+
+  function applyTick(symbol, price) {
+    const apply = (q) => {
+      if (!q) return;
+      q.price = price;
+      if (q.previousClose) {
+        q.change = price - q.previousClose;
+        q.changePct = (q.change / q.previousClose) * 100;
+      }
+    };
+    apply(watchlistData.value.find(s => s.symbol === symbol));
+    apply(marketData.value.find(s => s.symbol === symbol));
+    if (selectedQuote.value?.symbol === symbol) apply(selectedQuote.value);
+    liveTick.value = { symbol, price, ts: Date.now() };
+  }
+
+  function connectLive() {
+    if (typeof window === 'undefined') return;
+    if (liveWs && (liveWs.readyState === 0 || liveWs.readyState === 1)) return; // already connecting/open
+    try {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      liveWs = new WebSocket(`${proto}//${location.host}/ws`);
+      liveWs.onopen = () => { liveConnected.value = true; syncLive(); };
+      liveWs.onmessage = (e) => {
+        let d;
+        try { d = JSON.parse(e.data); } catch { return; }
+        if (d.type === 'trade') applyTick(d.symbol, d.price);
+      };
+      liveWs.onclose = () => { liveConnected.value = false; liveReconnect = setTimeout(connectLive, 3000); };
+      liveWs.onerror = () => { try { liveWs.close(); } catch { /* ignore */ } };
+    } catch { /* ignore */ }
+  }
+
+  function disconnectLive() {
+    if (liveReconnect) clearTimeout(liveReconnect);
+    if (liveWs) { try { liveWs.onclose = null; liveWs.close(); } catch { /* ignore */ } liveWs = null; }
+    liveConnected.value = false;
   }
 
   async function init() {
@@ -130,8 +192,10 @@ export const useMarketStore = defineStore('market', () => {
   return {
     marketData, watchlistData, selectedSymbol, selectedQuote, historicalData, chartInterval,
     searchResults, watchlistSymbols, chartRange, loading, lastUpdated, error,
+    liveTick, liveConnected,
     selectedStock, topMovers,
     fetchMarket, fetchWatchlist, fetchHistorical, fetchQuote, searchSymbol,
-    selectSymbol, addToWatchlist, removeFromWatchlist, init
+    selectSymbol, addToWatchlist, removeFromWatchlist, init,
+    connectLive, disconnectLive, syncLive
   };
 });

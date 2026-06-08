@@ -1,8 +1,9 @@
 <template>
   <div class="bg-surface-100 border-b border-surface-300 h-8 flex items-center overflow-hidden">
-    <div class="flex-shrink-0 px-3 text-xs font-mono text-accent font-semibold border-r border-surface-300 h-full flex items-center">
-      LIVE
-      <span class="live-dot ml-1.5"></span>
+    <div class="flex-shrink-0 px-3 text-xs font-mono font-semibold border-r border-surface-300 h-full flex items-center"
+         :class="store.liveConnected ? 'text-accent' : 'text-gray-500'">
+      {{ store.liveConnected ? 'LIVE' : 'IDLE' }}
+      <span class="ml-1.5" :class="store.liveConnected ? 'live-dot' : 'idle-dot'"></span>
     </div>
     <div class="ticker-wrap flex-1 relative">
       <div class="ticker-content">

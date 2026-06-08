@@ -4,25 +4,25 @@
     <MarketTicker />
 
     <!-- Main grid -->
-    <div class="flex-1 grid min-h-0" style="grid-template-columns: 260px 1fr 280px; grid-template-rows: 1fr 190px; gap: 6px; padding: 6px;">
+    <div class="flex-1 dash-grid min-h-0">
 
       <!-- Left: News Feed -->
-      <div class="row-span-2 min-h-0 overflow-hidden">
+      <div class="news-area min-h-0 overflow-hidden">
         <NewsFeed />
       </div>
 
       <!-- Center top: Stock Chart -->
-      <div class="min-h-0 overflow-hidden">
+      <div class="chart-area min-h-0 overflow-hidden">
         <StockChart :symbol="selectedSymbol" />
       </div>
 
       <!-- Right: Watchlist -->
-      <div class="row-span-2 min-h-0 overflow-hidden">
+      <div class="watch-area min-h-0 overflow-hidden">
         <WatchList />
       </div>
 
       <!-- Center bottom: Accuracy + Predictions row -->
-      <div class="grid min-h-0 overflow-hidden" style="grid-template-columns: 1fr 220px; gap: 6px;">
+      <div class="bottom-area grid min-h-0 overflow-hidden">
         <AccuracyTracker />
         <PredictionPanel />
       </div>
@@ -37,7 +37,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useMarketStore } from '../stores/marketStore.js';
 import { useNewsStore } from '../stores/newsStore.js';
 import { usePredictionStore } from '../stores/predictionStore.js';
@@ -78,9 +78,18 @@ async function init() {
     predictionStore.fetchAccuracy()
   ]);
 
-  // Auto-load predictions for default symbol
-  await predictionStore.fetchForSymbol(selectedSymbol.value);
+  // Open the live trade stream (chart + prices update in real time)
+  marketStore.connectLive();
+
+  // Auto-run the model for the default symbol (full enrichment: targets, trend, rationale)
+  try { await predictionStore.generateForSymbol(selectedSymbol.value); } catch { /* ignore */ }
 }
+
+// Re-run predictions whenever the selected symbol changes
+watch(selectedSymbol, async (sym) => {
+  if (!sym) return;
+  try { await predictionStore.generateForSymbol(sym); } catch { /* ignore */ }
+});
 
 onMounted(() => {
   init();
@@ -93,5 +102,50 @@ onMounted(() => {
   }, 60_000);
 });
 
-onUnmounted(() => clearInterval(refreshInterval));
+onUnmounted(() => {
+  clearInterval(refreshInterval);
+  marketStore.disconnectLive();
+});
 </script>
+
+<style scoped>
+/* Responsive dashboard grid: side panels shrink via minmax (no clipping),
+   the chart takes the remaining width, and predictions get a real row height. */
+.dash-grid {
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);
+  grid-template-rows: minmax(0, 1fr) minmax(220px, 264px);
+  gap: 6px;
+  padding: 6px;
+}
+.news-area  { grid-column: 1; grid-row: 1 / span 2; }
+.chart-area { grid-column: 2; grid-row: 1; }
+.watch-area { grid-column: 3; grid-row: 1 / span 2; }
+.bottom-area {
+  grid-column: 2;
+  grid-row: 2;
+  grid-template-columns: minmax(0, 1fr) minmax(230px, 300px);
+  gap: 6px;
+}
+
+/* Tighter side columns on mid widths */
+@media (max-width: 1280px) {
+  .dash-grid { grid-template-columns: minmax(180px, 215px) minmax(0, 1fr) minmax(195px, 240px); }
+}
+
+/* Stack vertically and let the dashboard scroll on narrow windows */
+@media (max-width: 1024px) {
+  .dash-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: minmax(280px, auto);
+    overflow-y: auto;
+  }
+  .news-area, .chart-area, .watch-area, .bottom-area {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .chart-area { min-height: 360px; }
+  .bottom-area { grid-template-columns: 1fr; grid-auto-rows: minmax(220px, auto); }
+}
+</style>
