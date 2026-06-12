@@ -218,6 +218,15 @@ async function getChartJson(symbol, params) {
     const data = await curlChartJson(chartUrl(base, symbol, params));
     if (data?.chart?.result?.[0]) return data;
   }
+  // Railway/containers often lack curl — fall back to axios
+  for (const base of [BASE1, BASE2]) {
+    try {
+      const res = await yget(chartUrl(base, symbol, params), {
+        headers: { 'User-Agent': UA, Accept: '*/*', Referer: 'https://finance.yahoo.com/' }
+      });
+      if (res.data?.chart?.result?.[0]) return res.data;
+    } catch { /* try next base */ }
+  }
   return null;
 }
 

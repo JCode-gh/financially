@@ -103,29 +103,27 @@ function isInternationalSymbol(symbol) {
 async function fetchDeepest(symbol) {
   const intl = isInternationalSymbol(symbol);
 
-  // EU/international tickers (WEBN.DE, KBCA.BR) — Yahoo chart API is the reliable source.
-  // Twelve Data free tier usually 404s on these, wasting quota and time.
   if (intl) {
-    let live = await getYahoo(symbol, MAX_DAYS).catch(() => null);
-    if (live?.length) return live;
-    live = await getStooq(symbol, MAX_DAYS).catch(() => null);
-    if (live?.length) return live;
+    const [yahoo, stooq] = await Promise.all([
+      getYahoo(symbol, MAX_DAYS).catch(() => null),
+      getStooq(symbol, MAX_DAYS).catch(() => null)
+    ]);
+    if (yahoo?.length) return yahoo;
+    if (stooq?.length) return stooq;
     return null;
   }
 
-  let live = await getTwelve(symbol, MAX_DAYS).catch(() => null);
-  if (live?.length) return live;
-
-  live = await getYahoo(symbol, MAX_DAYS).catch(() => null);
-  if (live?.length) return live;
-
-  live = await getStooq(symbol, MAX_DAYS).catch(() => null);
-  if (live?.length) return live;
-
-  live = await getAlpha(symbol, MAX_DAYS).catch(() => null);
-  if (live?.length) return live;
-
-  return null;
+  const [twelve, yahoo, stooq, alpha] = await Promise.all([
+    getTwelve(symbol, MAX_DAYS).catch(() => null),
+    getYahoo(symbol, MAX_DAYS).catch(() => null),
+    getStooq(symbol, MAX_DAYS).catch(() => null),
+    getAlpha(symbol, MAX_DAYS).catch(() => null)
+  ]);
+  return twelve?.length ? twelve
+    : yahoo?.length ? yahoo
+    : stooq?.length ? stooq
+    : alpha?.length ? alpha
+    : null;
 }
 
 /**
@@ -153,7 +151,9 @@ export async function getHistoricalSeries(symbol, days = 100, freshMs = FRESH_MS
     full = disk?.candles || null;
   }
 
-  if (!full?.length) full = disk?.candles || null;
+  // Prefer stale cache over nothing (critical on Railway where disk starts empty
+  // and live providers may rate-limit datacenter IPs).
+  if (!full?.length && disk?.candles?.length) full = disk.candles;
   if (!full?.length) return null;
   return full.slice(-days);
 }

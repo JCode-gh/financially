@@ -41,6 +41,8 @@ export const useAuthStore = defineStore('auth', () => {
 
     syncing.value = true;
     try {
+      // Ensure auth token is ready before Firestore reads/writes
+      await fbUser.getIdToken(true);
       const cloud = await loadCloudUserData(fbUser.uid);
       if (cloud?.watchlists?.lists?.length) {
         await applyCloudData(cloud);
@@ -48,8 +50,13 @@ export const useAuthStore = defineStore('auth', () => {
         await uploadLocalData(fbUser.uid);
       }
     } catch (e) {
-      console.warn('[auth] cloud sync failed:', e.message);
-      error.value = 'Could not sync your data';
+      const msg = e?.code || e?.message || String(e);
+      if (msg.includes('permission') || msg.includes('PERMISSION_DENIED')) {
+        console.warn('[auth] Firestore sync skipped — deploy firestore.rules and add your site to Firebase Authorized domains');
+      } else {
+        console.warn('[auth] cloud sync failed:', msg);
+      }
+      // Don't block the app — local watchlists still work offline
     } finally {
       syncing.value = false;
     }

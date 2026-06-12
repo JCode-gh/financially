@@ -21,6 +21,7 @@ app.use(cors({
     if (!origin) return callback(null, true);
     if (/^http:\/\/localhost:\d+$/.test(origin)) return callback(null, true);
     if (/^https:\/\/([a-z0-9-]+\.)*jcode\.be$/i.test(origin)) return callback(null, true);
+    if (/^https:\/\/([a-z0-9-]+\.)*netlify\.app$/i.test(origin)) return callback(null, true);
     const extra = process.env.CORS_ORIGIN?.split(',').map(s => s.trim()).filter(Boolean) || [];
     if (extra.includes(origin)) return callback(null, true);
     callback(null, false);

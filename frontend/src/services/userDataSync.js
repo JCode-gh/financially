@@ -26,11 +26,21 @@ export function scheduleCloudSync() {
 
 export async function loadCloudUserData(uid) {
   if (!firebaseEnabled || !uid) return null;
-  const snap = await getDoc(doc(db, 'users', uid));
-  return snap.exists() ? snap.data() : null;
+  try {
+    const snap = await getDoc(doc(db, 'users', uid));
+    return snap.exists() ? snap.data() : null;
+  } catch (e) {
+    if (e?.code === 'permission-denied') return null;
+    throw e;
+  }
 }
 
 export async function saveCloudUserData(uid, data) {
   if (!firebaseEnabled || !uid) return;
-  await setDoc(doc(db, 'users', uid), { ...data, updatedAt: Date.now() }, { merge: true });
+  try {
+    await setDoc(doc(db, 'users', uid), { ...data, updatedAt: Date.now() }, { merge: true });
+  } catch (e) {
+    if (e?.code === 'permission-denied') return;
+    throw e;
+  }
 }

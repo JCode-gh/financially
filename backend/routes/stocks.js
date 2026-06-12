@@ -86,19 +86,21 @@ router.get('/quote/:symbol', async (req, res) => {
 });
 
 router.get('/historical/:symbol', async (req, res) => {
-  const symbol = req.params.symbol.toUpperCase();
+  const symbol = decodeURIComponent(req.params.symbol).toUpperCase();
   const interval = req.query.interval || '1day';
   try {
     let data;
     if (INTRADAY_INTERVALS.has(interval)) {
-      // Intraday bars (Twelve Data) — bypass the daily disk cache; these move constantly.
       const bars = Math.min(2000, parseInt(req.query.days || '500', 10));
       data = await getIntraday(symbol, interval, bars);
     } else {
-      // Daily: persistent multi-source provider (Twelve Data → Yahoo → Alpha Vantage),
-      // merged into a disk cache so every range slices one accumulated series.
       const days = Math.min(5000, parseInt(req.query.days || '100', 10));
-      data = await getHistoricalSeries(symbol, days);
+      // Accept day-old cache on server — avoids 503 when Yahoo rate-limits Railway IPs
+      data = await getHistoricalSeries(symbol, days, 24 * 3600_000);
+      if (!data?.length) {
+        const { getHistorical: getStooqHist } = await import('../services/stooq.js');
+        data = await getStooqHist(symbol, days).catch(() => null);
+      }
     }
     if (data?.length) return res.json({ success: true, data, interval });
     return res.status(503).json({ success: false, error: `Historical data unavailable for ${symbol}` });
