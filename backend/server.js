@@ -9,7 +9,8 @@ import predictionRoutes from './routes/predictions.js';
 import scannerRoutes from './routes/scanner.js';
 import { evaluatePredictions } from './jobs/predictionEvaluator.js';
 import { runBacktest } from './jobs/backtester.js';
-import { runScan, SCAN_SYMBOLS } from './jobs/scanner.js';
+import { runScan } from './jobs/scanner.js';
+import { warmHistoryBatch, getSymbolsReadyForScan } from './jobs/historyWarmer.js';
 import { initLiveStream } from './services/liveStream.js';
 
 const app = express();
@@ -52,9 +53,14 @@ cron.schedule('0 12 * * 1-5', () => {
   runScan().catch(err => console.error('[Scanner]', err.message));
 });
 
-// Weekly walk-forward re-train (Sunday night) keeps weights current as regimes shift
+// Weekly walk-forward re-train
 cron.schedule('0 3 * * 0', () => {
-  runBacktest(SCAN_SYMBOLS).catch(err => console.error('[Backtest]', err.message));
+  runBacktest(getSymbolsReadyForScan()).catch(err => console.error('[Backtest]', err.message));
+});
+
+// History warmer: fill disk cache gradually (every 2h on weekdays)
+cron.schedule('0 */2 * * 1-5', () => {
+  warmHistoryBatch().catch(err => console.error('[HistoryWarmer]', err.message));
 });
 
 initDB();
@@ -67,6 +73,10 @@ setTimeout(() => {
   evaluatePredictions().catch(console.error);
 }, 5000);
 
+setTimeout(() => {
+  warmHistoryBatch({ log: true }).catch(console.error);
+}, 3000);
+
 setTimeout(async () => {
   try {
     const db = getDB();
@@ -74,7 +84,7 @@ setTimeout(async () => {
     const trained = db.prepare('SELECT COUNT(*) as n FROM backtest_results WHERE total > 0').get();
     if ((iteration || 0) < 500 || !trained?.n) {
       console.log('[Backtest] Model is young — running walk-forward training...');
-      await runBacktest(SCAN_SYMBOLS);
+      await runBacktest(getSymbolsReadyForScan());
     }
   } catch (err) {
     console.error('[Backtest]', err.message);

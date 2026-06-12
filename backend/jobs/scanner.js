@@ -1,10 +1,4 @@
-// Automated opportunity scanner — the "do the work for me" engine.
-//
-// Every run it sweeps the watchlist: price history (disk-cached), live quote,
-// news + event detection, all indicators, earnings calendar. Each symbol gets
-// a composite opportunity score, a BUY/SELL/HOLD call, a full trade plan, and
-// plain-English reasons. Results are ranked and stored; notable signal changes
-// (MACD cross, breakout, news spike, earnings ahead...) become alerts.
+// Automated opportunity scanner with cross-sectional ranking and fundamentals.
 
 import { getDB } from '../db/database.js';
 import { getHistoricalSeries } from '../services/historyProvider.js';
@@ -12,17 +6,20 @@ import { getStockNews, getFinnhubQuote } from '../services/finnhub.js';
 import { getRssStockNews } from '../services/rssNews.js';
 import { getUpcomingEarnings } from '../services/earningsCalendar.js';
 import { analyzeArticles } from '../models/sentimentAnalyzer.js';
-import { getHorizonWeights, computeScore, buildTradePlan, buildReasons } from '../models/predictionEngine.js';
+import { getHorizonWeights, computeScore, buildTradePlan, buildReasons, computeEnsembleScore, blendForHorizon } from '../models/predictionEngine.js';
 import {
   SCAN_GATES, applyRegimeAdjustment, classifyPick, buildWeightedReasons
 } from '../models/scannerScoring.js';
+import { getFundamentalSignals, mergeFundamentalSignals } from '../models/fundamentalsSignals.js';
+import { getMarketRegime } from '../models/marketRegime.js';
+import { rankCrossSectionally } from '../models/signalHygiene.js';
+import { getSymbolsReadyForScan } from '../jobs/historyWarmer.js';
+import { CORE_SCAN_SYMBOLS } from '../data/universe.js';
 
-export const SCAN_SYMBOLS = [
-  'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'TSLA',
-  'JPM', 'BAC', 'GS', 'V', 'MA', 'BRK-B', 'SPY', 'QQQ'
-];
+export { CORE_SCAN_SYMBOLS as SCAN_SYMBOLS };
+export { getSymbolsReadyForScan };
 
-const HISTORY_FRESH_MS = 3 * 3600_000; // scanner tolerates 3h-old daily candles (quote overlays live price)
+const HISTORY_FRESH_MS = 3 * 3600_000;
 let scanning = false;
 
 function dedupeArticles(articles) {
@@ -35,7 +32,6 @@ function dedupeArticles(articles) {
   });
 }
 
-// Overlay the live quote onto the last daily candle so signals see current price.
 function withLiveQuote(candles, quote) {
   if (!quote?.price || !candles.length) return candles;
   const updated = candles.slice();
@@ -59,7 +55,6 @@ function addAlert(db, ticker, kind, direction, message) {
 
 function detectAlerts(db, ticker, indicators, news, earnings) {
   const { macd, rsi, bb, maCross, breakout, week52, price } = indicators;
-
   if (macd?.crossed_above) addAlert(db, ticker, 'macd_cross', 1, `${ticker}: MACD bullish cross`);
   if (macd?.crossed_below) addAlert(db, ticker, 'macd_cross', -1, `${ticker}: MACD bearish cross`);
   if (rsi != null && rsi >= 78) addAlert(db, ticker, 'rsi_extreme', -1, `${ticker}: RSI ${Math.round(rsi)} — extremely overbought`);
@@ -72,18 +67,16 @@ function detectAlerts(db, ticker, indicators, news, earnings) {
   if (breakout?.type === 'down' && Math.abs(breakout.signal) >= 1) addAlert(db, ticker, 'breakout', -1, `${ticker}: 20-day breakdown on heavy volume`);
   if (week52?.position > 0.98) addAlert(db, ticker, 'week52', 1, `${ticker}: new 52-week high zone`);
   if (week52?.position < 0.04) addAlert(db, ticker, 'week52', -1, `${ticker}: 52-week low zone`);
-
   if (news.buzz >= 2 && Math.abs(news.score) > 0.2 && news.articleCount >= 4) {
     const dir = news.score > 0 ? 1 : -1;
-    const evTxt = news.topEvents?.[0]?.label ? ` (${news.topEvents[0].label})` : '';
-    addAlert(db, ticker, 'news_spike', dir, `${ticker}: ${dir > 0 ? 'bullish' : 'bearish'} news surge${evTxt} — ${news.buzz}× normal flow`);
+    addAlert(db, ticker, 'news_spike', dir, `${ticker}: ${dir > 0 ? 'bullish' : 'bearish'} news surge`);
   }
   if (earnings && earnings.daysUntil >= 0 && earnings.daysUntil <= 3) {
-    addAlert(db, ticker, 'earnings_soon', 0, `${ticker}: earnings ${earnings.daysUntil === 0 ? 'today' : `in ${earnings.daysUntil}d`}${earnings.hour ? ` (${earnings.hour})` : ''}`);
+    addAlert(db, ticker, 'earnings_soon', 0, `${ticker}: earnings ${earnings.daysUntil === 0 ? 'today' : `in ${earnings.daysUntil}d`}`);
   }
 }
 
-async function scanSymbol(db, ticker, horizonWeights, earningsMap) {
+async function scanSymbolRaw(db, ticker, horizonWeights, earningsMap, marketRegime) {
   const [candlesRaw, quote, fhNews, rssNews] = await Promise.all([
     getHistoricalSeries(ticker, 420, HISTORY_FRESH_MS).catch(() => null),
     getFinnhubQuote(ticker).catch(() => null),
@@ -95,49 +88,68 @@ async function scanSymbol(db, ticker, horizonWeights, earningsMap) {
   const candles = withLiveQuote(candlesRaw, quote);
   const articles = dedupeArticles([...(fhNews || []), ...(rssNews || [])]);
   const news = analyzeArticles(articles, ticker);
-
-  const { score: techScore, indicators, signals } = computeScore(candles, horizonWeights, news.score);
-  const weights5d = horizonWeights['5d']?.weights || horizonWeights['5d'] || {};
-  const trend = indicators.trend;
   const earnings = earningsMap[ticker] || earningsMap[ticker.replace('-', '.')] || null;
+
+  const { signals: techSignals, indicators } = computeScore(candles, horizonWeights, news.score);
+  const { signals: fundSignals } = await getFundamentalSignals(ticker, candles, earnings);
+  const signals = mergeFundamentalSignals(techSignals, fundSignals);
+
+  const weights5d = horizonWeights['5d']?.weights || {};
+  const techScore = blendForHorizon(computeEnsembleScore(signals, weights5d), '5d');
 
   const buzzFactor = Math.min(1.5, Math.max(0.85, 0.85 + (news.buzz || 0) * 0.2));
   const catalyst = Math.max(-1, Math.min(1, news.score * buzzFactor + news.impactPct / 10));
   let composite = Math.max(-1, Math.min(1, techScore * (1 - SCAN_GATES.newsWeight) + catalyst * SCAN_GATES.newsWeight));
-  composite = applyRegimeAdjustment(composite, indicators);
+  composite = applyRegimeAdjustment(composite, indicators, marketRegime);
 
   let confidence = Math.min(0.92, 0.48 + Math.abs(composite) * 0.5);
-  const earningsRisk = earnings && earnings.daysUntil >= 0 && earnings.daysUntil <= 2;
-  if (earningsRisk) confidence *= 0.72;
-
-  const score100 = Math.round(composite * 100);
-  const provisionalDir = composite >= 0.15 ? 1 : composite <= -0.15 ? -1 : 0;
-  const tradePlan = Math.abs(composite) >= 0.15 ? buildTradePlan(provisionalDir, indicators) : null;
-
-  const pick = classifyPick({ composite, confidence, tradePlan, indicators, earnings });
-  const action = pick.action;
-  const direction = action === 'BUY' ? 1 : action === 'SELL' ? -1 : 0;
-
-  const narrativeReasons = buildReasons(indicators, signals, news, direction || (pick.rawSignal === 'BUY' ? 1 : -1));
-  const weightedReasons = buildWeightedReasons(signals, weights5d, news);
-  const reasons = [...new Set([...weightedReasons, ...narrativeReasons])].slice(0, 5);
-
-  if (earnings && earnings.daysUntil >= 0 && earnings.daysUntil <= 7) {
-    reasons.unshift(`Earnings ${earnings.daysUntil === 0 ? 'TODAY' : `in ${earnings.daysUntil}d`}${earnings.hour ? ` (${earnings.hour.replace('bmo', 'before open').replace('amc', 'after close')})` : ''} — expect volatility`);
-  }
+  if (earnings && earnings.daysUntil >= 0 && earnings.daysUntil <= 2) confidence *= 0.72;
 
   detectAlerts(db, ticker, indicators, news, earnings);
 
   return {
     ticker,
+    composite,
+    confidence: parseFloat(confidence.toFixed(3)),
+    indicators,
+    signals,
+    news,
+    earnings,
+    weights5d,
+    trend: indicators.trend
+  };
+}
+
+function finalizeScanRow(raw, pick, crossRank, crossPercentile) {
+  const { composite, confidence, indicators, signals, news, earnings, weights5d, trend } = raw;
+  const score100 = Math.round(composite * 100);
+  const provisionalDir = composite >= 0.15 ? 1 : composite <= -0.15 ? -1 : 0;
+  const tradePlan = Math.abs(composite) >= 0.15
+    ? buildTradePlan(provisionalDir, indicators, { confidence })
+    : null;
+
+  const action = pick.action;
+  const direction = action === 'BUY' ? 1 : action === 'SELL' ? -1 : 0;
+  const narrativeReasons = buildReasons(indicators, signals, news, direction || (pick.rawSignal === 'BUY' ? 1 : -1));
+  const weightedReasons = buildWeightedReasons(signals, weights5d, news);
+  const reasons = [...new Set([...weightedReasons, ...narrativeReasons])].slice(0, 5);
+
+  if (earnings && earnings.daysUntil >= 0 && earnings.daysUntil <= 7) {
+    reasons.unshift(`Earnings ${earnings.daysUntil === 0 ? 'TODAY' : `in ${earnings.daysUntil}d`}`);
+  }
+
+  return {
+    ticker: raw.ticker,
     action,
     rawSignal: pick.rawSignal,
     quality: pick.quality,
     actionable: pick.actionable,
     flags: pick.flags,
     rank: pick.rank,
+    crossRank,
+    crossPercentile,
     score: score100,
-    confidence: parseFloat(confidence.toFixed(3)),
+    confidence,
     price: indicators.price,
     entry: tradePlan?.entry ?? null,
     stop: tradePlan?.stop ?? null,
@@ -157,36 +169,64 @@ async function scanSymbol(db, ticker, horizonWeights, earningsMap) {
   };
 }
 
-export async function runScan(symbols = SCAN_SYMBOLS) {
+export async function runScan(symbols) {
   if (scanning) return { skipped: true };
   scanning = true;
   const startedAt = Date.now();
 
   try {
     const db = getDB();
+    const scanList = symbols?.length ? symbols : getSymbolsReadyForScan();
     const horizonWeights = getHorizonWeights();
-    const earningsMap = await getUpcomingEarnings().catch(() => ({}));
+    const [earningsMap, marketRegime] = await Promise.all([
+      getUpcomingEarnings().catch(() => ({})),
+      getMarketRegime().catch(() => ({ label: 'neutral', spyTrend: 0 }))
+    ]);
 
-    const results = [];
-    // Small batches keep us well inside Finnhub's 60 req/min
-    for (let i = 0; i < symbols.length; i += 5) {
-      const batch = symbols.slice(i, i + 5);
-      const settled = await Promise.allSettled(batch.map(s => scanSymbol(db, s, horizonWeights, earningsMap)));
+    const rawResults = [];
+    for (let i = 0; i < scanList.length; i += 5) {
+      const batch = scanList.slice(i, i + 5);
+      const settled = await Promise.allSettled(
+        batch.map(s => scanSymbolRaw(db, s, horizonWeights, earningsMap, marketRegime))
+      );
       for (const r of settled) {
-        if (r.status === 'fulfilled' && r.value) results.push(r.value);
+        if (r.status === 'fulfilled' && r.value) rawResults.push(r.value);
       }
-      if (i + 5 < symbols.length) await new Promise(r => setTimeout(r, 400));
+      if (i + 5 < scanList.length) await new Promise(r => setTimeout(r, 400));
     }
 
-    if (!results.length) return { results: [], runId: null };
+    if (!rawResults.length) return { results: [], runId: null };
+
+    const rankMap = rankCrossSectionally(rawResults);
+    const universeSize = rawResults.length;
+
+    const results = rawResults.map(raw => {
+      const ranks = rankMap.get(raw.ticker) || {};
+      const provisionalDir = raw.composite >= 0.15 ? 1 : raw.composite <= -0.15 ? -1 : 0;
+      const tradePlan = Math.abs(raw.composite) >= 0.15
+        ? buildTradePlan(provisionalDir, raw.indicators, { confidence: raw.confidence })
+        : null;
+
+      const pick = classifyPick({
+        composite: raw.composite,
+        confidence: raw.confidence,
+        tradePlan,
+        indicators: raw.indicators,
+        earnings: raw.earnings,
+        crossPercentile: ranks.crossPercentile,
+        universeSize
+      });
+
+      return finalizeScanRow(raw, pick, ranks.crossRank, ranks.crossPercentile);
+    });
 
     const runId = Date.now();
     const insert = db.prepare(`
       INSERT INTO scan_results
         (run_id, ticker, action, score, confidence, price, entry, stop, target, rr, position_pct,
          trend, rsi, adx, news_score, news_count, buzz, earnings_date, earnings_in_days, reasons, events,
-         quality, actionable, raw_signal, flags, rank)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         quality, actionable, raw_signal, flags, rank, cross_rank, cross_percentile)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertAll = db.transaction(rows => {
       for (const r of rows) {
@@ -194,7 +234,8 @@ export async function runScan(symbols = SCAN_SYMBOLS) {
           runId, r.ticker, r.action, r.score, r.confidence, r.price, r.entry, r.stop, r.target,
           r.rr, r.positionPct, r.trend, r.rsi, r.adx, r.newsScore, r.newsCount, r.buzz,
           r.earningsDate, r.earningsInDays, JSON.stringify(r.reasons), JSON.stringify(r.events),
-          r.quality, r.actionable ? 1 : 0, r.rawSignal, JSON.stringify(r.flags || []), r.rank
+          r.quality, r.actionable ? 1 : 0, r.rawSignal, JSON.stringify(r.flags || []), r.rank,
+          r.crossRank ?? null, r.crossPercentile ?? null
         );
       }
     });
@@ -203,16 +244,13 @@ export async function runScan(symbols = SCAN_SYMBOLS) {
     const sorted = results.sort((a, b) => b.rank - a.rank);
     const actionable = sorted.filter(r => r.actionable);
 
-    // Housekeeping: keep a week of scans, two weeks of alerts
     db.prepare(`DELETE FROM scan_results WHERE run_at < datetime('now', '-7 days')`).run();
     db.prepare(`DELETE FROM alerts WHERE created_at < datetime('now', '-14 days')`).run();
 
     const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
-    const buys = actionable.filter(r => r.action === 'BUY').length;
-    const sells = actionable.filter(r => r.action === 'SELL').length;
-    console.log(`[Scanner] ${results.length} symbols in ${secs}s → ${actionable.length} actionable (${buys} BUY, ${sells} SELL)`);
+    console.log(`[Scanner] ${results.length}/${scanList.length} symbols in ${secs}s → ${actionable.length} actionable · regime ${marketRegime?.label || 'n/a'}`);
 
-    return { runId, results: sorted };
+    return { runId, results: sorted, marketRegime, universeSize: scanList.length };
   } finally {
     scanning = false;
   }
@@ -224,22 +262,20 @@ export function getLatestScan() {
   if (!last) return { runAt: null, results: [] };
 
   const rows = db.prepare('SELECT * FROM scan_results WHERE run_id = ?').all(last.run_id);
-  const results = rows.map(mapScanRow).sort((a, b) => (b.rank || 0) - (a.rank || 0));
-
-  return { runAt: last.run_at, results };
+  return { runAt: last.run_at, results: rows.map(mapScanRow).sort((a, b) => (b.rank || 0) - (a.rank || 0)) };
 }
 
 function mapScanRow(r) {
-  const flags = r.flags ? JSON.parse(r.flags) : [];
-  const rank = r.rank ?? Math.abs(r.score) * (r.confidence || 0.5);
   return {
     ticker: r.ticker,
     action: r.action,
     rawSignal: r.raw_signal || r.action,
     quality: r.quality || 'hold',
     actionable: !!r.actionable,
-    flags,
-    rank,
+    flags: r.flags ? JSON.parse(r.flags) : [],
+    rank: r.rank ?? Math.abs(r.score) * (r.confidence || 0.5),
+    crossRank: r.cross_rank,
+    crossPercentile: r.cross_percentile,
     score: r.score,
     confidence: r.confidence,
     price: r.price,

@@ -16,20 +16,27 @@ let db;
 // should dominate flips with the market regime, so the walk-forward learning
 // (not the defaults) decides who gets the vote.
 export const DEFAULT_WEIGHTS = {
-  momentum: 0.13,
-  trend_regime: 0.07,
-  sma_crossover: 0.10,
-  ema_crossover: 0.08,
-  breakout: 0.09,
-  adx_trend: 0.06,
-  volume_trend: 0.07,
-  news_sentiment: 0.12,
-  macd: 0.06,
-  rsi: 0.07,
-  stochastic: 0.06,
-  bollinger: 0.05,
-  mfi: 0.04
+  momentum: 0.11,
+  trend_regime: 0.06,
+  sma_crossover: 0.08,
+  ema_crossover: 0.07,
+  breakout: 0.08,
+  adx_trend: 0.05,
+  volume_trend: 0.06,
+  news_sentiment: 0.10,
+  macd: 0.05,
+  rsi: 0.06,
+  stochastic: 0.05,
+  bollinger: 0.04,
+  mfi: 0.04,
+  valuation: 0.06,
+  growth: 0.05,
+  quality: 0.05,
+  earnings_drift: 0.04
 };
+
+// Live-only signals — excluded from walk-forward backtest weight training
+export const LIVE_ONLY_WEIGHT_KEYS = ['news_sentiment', 'valuation', 'growth', 'quality', 'earnings_drift'];
 
 export function getDB() {
   if (!db) {
@@ -160,6 +167,18 @@ export function initDB() {
       trained_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS calibration (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      horizon TEXT NOT NULL,
+      bucket_low REAL NOT NULL,
+      bucket_high REAL NOT NULL,
+      total INTEGER DEFAULT 0,
+      correct INTEGER DEFAULT 0,
+      hit_rate REAL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(horizon, bucket_low)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_predictions_ticker ON predictions(ticker);
     CREATE INDEX IF NOT EXISTS idx_predictions_resolved ON predictions(correct);
     CREATE INDEX IF NOT EXISTS idx_predictions_target ON predictions(target_date);
@@ -183,6 +202,8 @@ export function initDB() {
   }
 
   migrateScanColumns(db);
+  migrateBacktestColumns(db);
+  migrateScanRankColumns(db);
 
   console.log('Database initialized at:', DB_PATH);
 }
@@ -194,4 +215,21 @@ function migrateScanColumns(db) {
   if (!cols.has('raw_signal')) db.exec('ALTER TABLE scan_results ADD COLUMN raw_signal TEXT');
   if (!cols.has('flags')) db.exec('ALTER TABLE scan_results ADD COLUMN flags TEXT');
   if (!cols.has('rank')) db.exec('ALTER TABLE scan_results ADD COLUMN rank REAL');
+}
+
+function migrateScanRankColumns(db) {
+  const cols = new Set(db.prepare('PRAGMA table_info(scan_results)').all().map(c => c.name));
+  if (!cols.has('cross_rank')) db.exec('ALTER TABLE scan_results ADD COLUMN cross_rank REAL');
+  if (!cols.has('cross_percentile')) db.exec('ALTER TABLE scan_results ADD COLUMN cross_percentile REAL');
+}
+
+function migrateBacktestColumns(db) {
+  const cols = new Set(db.prepare('PRAGMA table_info(backtest_results)').all().map(c => c.name));
+  if (!cols.has('expectancy')) db.exec('ALTER TABLE backtest_results ADD COLUMN expectancy REAL DEFAULT 0');
+  if (!cols.has('profit_factor')) db.exec('ALTER TABLE backtest_results ADD COLUMN profit_factor REAL DEFAULT 0');
+  if (!cols.has('max_drawdown')) db.exec('ALTER TABLE backtest_results ADD COLUMN max_drawdown REAL DEFAULT 0');
+  if (!cols.has('avg_rr')) db.exec('ALTER TABLE backtest_results ADD COLUMN avg_rr REAL DEFAULT 0');
+  if (!cols.has('cost_bps')) db.exec('ALTER TABLE backtest_results ADD COLUMN cost_bps REAL DEFAULT 10');
+  if (!cols.has('win_rate')) db.exec('ALTER TABLE backtest_results ADD COLUMN win_rate REAL DEFAULT 0');
+  if (!cols.has('sharpe_like')) db.exec('ALTER TABLE backtest_results ADD COLUMN sharpe_like REAL DEFAULT 0');
 }

@@ -6,7 +6,8 @@ import { getHistoricalSeries } from '../services/historyProvider.js';
 import { generatePredictions, getModelWeights } from '../models/predictionEngine.js';
 import { evaluatePredictions, recalculateAccuracy } from '../jobs/predictionEvaluator.js';
 import { runBacktest, getBacktestResults } from '../jobs/backtester.js';
-import { SCAN_SYMBOLS } from '../jobs/scanner.js';
+import { getSymbolsReadyForScan } from '../jobs/historyWarmer.js';
+import { getCalibrationCurve } from '../models/calibration.js';
 
 const router = Router();
 
@@ -48,8 +49,20 @@ router.get('/accuracy', (req, res) => {
       backtest: backtest.map(b => ({
         horizon: b.horizon, total: b.total, correct: b.correct,
         accuracy: b.accuracy, symbols: b.symbols, trainedAt: b.trained_at,
-        indicators: b.details
+        indicators: b.details,
+        expectancy: b.expectancy,
+        profitFactor: b.profit_factor,
+        maxDrawdown: b.max_drawdown,
+        avgR: b.avg_rr,
+        winRate: b.win_rate,
+        sharpeLike: b.sharpe_like,
+        costBps: b.cost_bps
       })),
+      calibration: {
+        '5d': getCalibrationCurve('5d'),
+        '1d': getCalibrationCurve('1d'),
+        '30d': getCalibrationCurve('30d')
+      },
       modelWeights: weights.weights,
       modelIteration: weights.iteration,
       indicatorStats: Object.fromEntries(
@@ -66,7 +79,7 @@ router.get('/accuracy', (req, res) => {
 // Re-train the model by walking forward through cached history
 router.post('/backtest', async (req, res) => {
   try {
-    const result = await runBacktest(SCAN_SYMBOLS);
+    const result = await runBacktest(getSymbolsReadyForScan());
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

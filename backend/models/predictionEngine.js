@@ -1,6 +1,8 @@
 import { getDB, DEFAULT_WEIGHTS } from '../db/database.js';
 import { computeAllIndicators, generateSignals } from './technicalAnalysis.js';
 import { analyzeArticles } from './sentimentAnalyzer.js';
+import { applyWeightHygiene } from './signalHygiene.js';
+import { calibratedWinProbability } from './calibration.js';
 
 const LEARNING_RATE = 0.015;
 // Per-horizon action thresholds, set where the walk-forward calibration curve
@@ -29,7 +31,7 @@ function horizonTarget(days, score, price, atr) {
 
 // Concrete trade plan: entry, stop (ATR- and support/resistance-aware), target,
 // risk/reward, and a position-size suggestion for a 1%-of-account risk budget.
-export function buildTradePlan(direction, indicators) {
+export function buildTradePlan(direction, indicators, { confidence, rr: rrOverride } = {}) {
   const price = indicators.price;
   const atr = indicators.atr || price * 0.02;
   const { sr } = indicators;
@@ -63,10 +65,20 @@ export function buildTradePlan(direction, indicators) {
 
   const risk = Math.abs(entry - stop);
   const reward = Math.abs(target - entry);
-  const rr = risk > 0 ? reward / risk : 0;
+  const rr = rrOverride ?? (risk > 0 ? reward / risk : 0);
   const riskPct = (risk / entry) * 100;
-  // Position sized so a stop-out costs ~1% of the account, capped at 25%.
-  const positionPct = riskPct > 0 ? Math.min(25, Math.round(100 / riskPct)) : 0;
+
+  // Base: 1% account risk cap → position size
+  let positionPct = riskPct > 0 ? Math.min(25, Math.round(100 / riskPct)) : 0;
+
+  // Edge-based Kelly tilt (capped at quarter-Kelly)
+  if (confidence != null && rr > 0) {
+    const p = calibratedWinProbability(confidence, '5d');
+    const kelly = (p * rr - (1 - p)) / rr;
+    const kellyFrac = Math.max(0, Math.min(0.25, kelly * 0.25));
+    const kellyScale = 0.75 + kellyFrac * 2;
+    positionPct = Math.min(25, Math.round(positionPct * kellyScale));
+  }
 
   return {
     direction: direction > 0 ? 'LONG' : 'SHORT',
@@ -173,12 +185,13 @@ export function saveModelWeights(weights, iteration, name = 'global') {
 // the current market regime, this signal works as a contrarian indicator
 // (e.g. fading momentum in a choppy market). Normalized by total |weight|.
 export function computeEnsembleScore(signals, weights) {
+  const w = applyWeightHygiene(weights);
   let score = 0;
   let totalWeight = 0;
   for (const [indicator, signal] of Object.entries(signals)) {
-    if (weights[indicator] !== undefined && signal !== undefined) {
-      score += weights[indicator] * signal;
-      totalWeight += Math.abs(weights[indicator]);
+    if (w[indicator] !== undefined && signal !== undefined) {
+      score += w[indicator] * signal;
+      totalWeight += Math.abs(w[indicator]);
     }
   }
   return totalWeight > 0 ? score / totalWeight : 0;
@@ -273,7 +286,7 @@ export async function generatePredictions(ticker, candles, articles = []) {
   const direction = score >= t5.moderate ? 1 : score <= -t5.moderate ? -1 : 0;
   const reasons = buildReasons(indicators, adjustedSignals, newsSentiment, direction);
   const rationale = reasons.slice(0, 3).join(' · ');
-  const tradePlan = direction !== 0 ? buildTradePlan(direction, indicators) : null;
+  const tradePlan = direction !== 0 ? buildTradePlan(direction, indicators, { confidence: scoreToPrediction(score, '5d').confidence }) : null;
 
   const horizons = [
     { id: '1d', days: 1 },

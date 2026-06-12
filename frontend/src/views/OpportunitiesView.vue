@@ -24,18 +24,30 @@
 
     <!-- Model track record -->
     <div v-if="meta" class="px-4 py-2 border-b border-surface-300/50 flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-mono text-gray-500 flex-shrink-0">
+      <span v-if="meta.marketRegime?.label" class="text-gray-400">
+        Market:
+        <span :class="regimeColor(meta.marketRegime.label)">{{ meta.marketRegime.label }}</span>
+      </span>
+      <span v-if="meta.universe?.readyForScan">
+        Universe: {{ meta.universe.readyForScan }}/{{ meta.universe.universeSize }}
+        <span class="text-gray-600">({{ meta.universe.coveragePct }}% cached)</span>
+      </span>
       <span v-if="meta.backtest5d?.total">
         Backtest 5d:
         <span :class="accColor(meta.backtest5d.accuracy)">{{ (meta.backtest5d.accuracy * 100).toFixed(1) }}%</span>
-        <span class="text-gray-600"> ({{ meta.backtest5d.total }} calls)</span>
+        <span class="text-gray-600"> ({{ meta.backtest5d.total }} OOS)</span>
+      </span>
+      <span v-if="meta.backtest5d?.expectancy != null">
+        Exp: <span :class="meta.backtest5d.expectancy >= 0 ? 'text-bull' : 'text-bear'">{{ meta.backtest5d.expectancy?.toFixed(2) }}%</span>
+        · PF {{ meta.backtest5d.profitFactor?.toFixed(2) }}
+        · DD {{ (meta.backtest5d.maxDrawdown * 100).toFixed(1) }}%
       </span>
       <span v-if="meta.live5d?.total">
         Live 5d:
         <span :class="accColor(meta.live5d.accuracy)">{{ (meta.live5d.accuracy * 100).toFixed(1) }}%</span>
-        <span class="text-gray-600"> ({{ meta.live5d.correct }}/{{ meta.live5d.total }})</span>
       </span>
       <span v-if="meta.gates" class="text-gray-600">
-        Gates: score ≥{{ (meta.gates.minScore * 100).toFixed(0) }} · conf ≥{{ (meta.gates.minConfidence * 100).toFixed(0) }}% · R:R ≥{{ meta.gates.minRR }}
+        Gates: score ≥{{ (meta.gates.minScore * 100).toFixed(0) }} · conf ≥{{ (meta.gates.minConfidence * 100).toFixed(0) }}% · R:R ≥{{ meta.gates.minRR }} · top decile
       </span>
     </div>
 
@@ -87,6 +99,10 @@
           <span v-if="o.quality === 'high'" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-accent/15 text-accent flex-shrink-0">High conviction</span>
           <span v-else-if="o.quality === 'watch'" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral/10 text-neutral flex-shrink-0">Watch</span>
 
+          <span v-if="o.crossPercentile != null" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-300 text-gray-400 flex-shrink-0">
+            Rank {{ o.crossPercentile?.toFixed(0) }}%
+          </span>
+
           <span class="text-[10px] font-mono text-gray-600 ml-auto flex-shrink-0">
             {{ Math.round((o.confidence || 0) * 100) }}% conf · score {{ o.score }}
           </span>
@@ -108,6 +124,10 @@
           <span>Stop <span class="text-bear">${{ fmt(o.stop) }}</span></span>
           <span>Target <span class="text-bull">${{ fmt(o.target) }}</span></span>
           <span v-if="o.rr">R:R <span :class="o.rr >= 1.5 ? 'text-bull' : 'text-neutral'">{{ o.rr.toFixed(1) }}</span></span>
+        </div>
+
+        <div v-if="o.newsCount > 0" class="pl-7 mt-1 text-[10px] font-mono text-gray-600">
+          News context only (not core signal) · {{ o.newsCount }} articles
         </div>
 
         <div v-if="o.earningsInDays != null && o.earningsInDays >= 0 && o.earningsInDays <= 7" class="mt-1.5 pl-7 text-xs text-neutral font-mono">
@@ -157,6 +177,13 @@ function accColor(acc) {
   if (acc >= 0.55) return 'text-bull';
   if (acc >= 0.48) return 'text-gray-300';
   return 'text-neutral';
+}
+
+function regimeColor(label) {
+  if (label === 'risk-on') return 'text-bull';
+  if (label === 'risk-off') return 'text-bear';
+  if (label === 'caution') return 'text-neutral';
+  return 'text-gray-400';
 }
 
 function actionBadge(action) {

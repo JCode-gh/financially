@@ -1,15 +1,16 @@
 import { PREDICTION_THRESHOLDS } from './predictionEngine.js';
+import { applyMarketRegime } from './marketRegime.js';
+import { MIN_UNIVERSE_FOR_RANK, TOP_DECILE, BOTTOM_DECILE } from './signalHygiene.js';
 
-// Stricter bar for surfacing a pick — aligned with walk-forward strong threshold.
 export const SCAN_GATES = {
-  action: PREDICTION_THRESHOLDS['5d'].strong,       // 0.32 — only strong calls become Buy/Sell
+  action: PREDICTION_THRESHOLDS['5d'].strong,
   minConfidence: 0.58,
   minRR: 1.5,
-  minADX: 18,          // below = choppy; dampen momentum signals
-  newsWeight: 0.14     // news can't be backtested — keep it a kicker, not core alpha
+  minADX: 18,
+  newsWeight: 0.14
 };
 
-export function applyRegimeAdjustment(composite, indicators) {
+export function applyRegimeAdjustment(composite, indicators, marketRegime = null) {
   let adjusted = composite;
   const adx = indicators.adx?.adx;
   const trendDir = indicators.trend?.direction ?? 0;
@@ -18,10 +19,15 @@ export function applyRegimeAdjustment(composite, indicators) {
   if (adjusted > 0.12 && trendDir < -0.35) adjusted *= 0.72;
   if (adjusted < -0.12 && trendDir > 0.35) adjusted *= 0.72;
 
+  if (marketRegime) adjusted = applyMarketRegime(adjusted, marketRegime);
+
   return Math.max(-1, Math.min(1, adjusted));
 }
 
-export function classifyPick({ composite, confidence, tradePlan, indicators, earnings }) {
+export function classifyPick({
+  composite, confidence, tradePlan, indicators, earnings,
+  crossPercentile, universeSize
+}) {
   const abs = Math.abs(composite);
   const rawSignal = composite >= PREDICTION_THRESHOLDS['5d'].moderate ? 'BUY'
     : composite <= -PREDICTION_THRESHOLDS['5d'].moderate ? 'SELL'
@@ -45,14 +51,21 @@ export function classifyPick({ composite, confidence, tradePlan, indicators, ear
   const trendAligned = direction > 0 ? trendDir >= -0.25 : trendDir <= 0.25;
   const chop = adx != null && adx < SCAN_GATES.minADX;
 
+  let passesRank = true;
+  if (universeSize >= MIN_UNIVERSE_FOR_RANK && crossPercentile != null) {
+    if (direction > 0) passesRank = crossPercentile >= TOP_DECILE;
+    else passesRank = crossPercentile <= BOTTOM_DECILE;
+  }
+
   if (!passesScore) flags.push('Score below strong threshold');
   if (!passesConf) flags.push('Low confidence');
   if (!passesRR) flags.push(tradePlan ? `R:R ${tradePlan.rr?.toFixed(1)} below ${SCAN_GATES.minRR}` : 'No trade plan');
   if (!earningsOk) flags.push('Earnings within 1 day');
   if (!trendAligned) flags.push('Against prevailing trend');
   if (chop) flags.push('Choppy market (low ADX)');
+  if (!passesRank) flags.push(`Not in top/bottom decile (rank ${crossPercentile?.toFixed(0)}%)`);
 
-  actionable = passesScore && passesConf && passesRR && earningsOk && trendAligned && !chop;
+  actionable = passesScore && passesConf && passesRR && earningsOk && trendAligned && !chop && passesRank;
 
   if (actionable) {
     quality = abs >= 0.48 ? 'high' : 'medium';
@@ -66,7 +79,8 @@ export function classifyPick({ composite, confidence, tradePlan, indicators, ear
   const rank = (actionable ? 100 : quality === 'watch' ? 35 : 0)
     + abs * 40
     + confidence * 25
-    + (tradePlan?.rr || 0) * 5;
+    + (tradePlan?.rr || 0) * 5
+    + (crossPercentile != null ? Math.abs(crossPercentile - 50) * 0.3 : 0);
 
   return { action, rawSignal, actionable, quality, flags, rank };
 }
@@ -84,8 +98,8 @@ export function buildWeightedReasons(signals, weights, newsSentiment) {
   if (newsSentiment && Math.abs(newsSentiment.score) > 0.12) {
     entries.push({
       key: 'news',
-      contrib: Math.abs(newsSentiment.score) * (weights.news_sentiment ?? 0.12),
-      text: `News ${newsSentiment.label}${newsSentiment.buzz > 1.5 ? ' (elevated coverage)' : ''}`
+      contrib: Math.abs(newsSentiment.score) * (weights.news_sentiment ?? 0.10),
+      text: `News context (${newsSentiment.label})${newsSentiment.buzz > 1.5 ? ' — elevated coverage' : ''}`
     });
   }
   return entries.sort((a, b) => b.contrib - a.contrib).slice(0, 4).map(e => e.text);
@@ -106,7 +120,11 @@ function formatSignalReason(key, sig, contrib) {
     stochastic: 'Stochastic',
     bollinger: 'Bollinger bands',
     mfi: 'Money flow',
-    news_sentiment: 'News sentiment'
+    news_sentiment: 'News context',
+    valuation: 'Valuation',
+    growth: 'Growth',
+    quality: 'Quality',
+    earnings_drift: 'Post-earnings drift'
   };
   const label = labels[key] || key.replace(/_/g, ' ');
   return `${label} ${dir} (weight ${(contrib * 100).toFixed(0)}%)`;
