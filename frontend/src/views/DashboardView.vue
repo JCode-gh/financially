@@ -16,14 +16,19 @@
         <StockChart :symbol="selectedSymbol" />
       </div>
 
-      <!-- Right: Watchlist -->
-      <div class="watch-area min-h-0 overflow-hidden">
-        <WatchList />
+      <!-- Right: Watchlist + Alerts -->
+      <div class="watch-area min-h-0 overflow-hidden flex flex-col gap-1.5">
+        <div class="flex-[3] min-h-0">
+          <WatchList />
+        </div>
+        <div class="flex-[2] min-h-0">
+          <AlertsPanel />
+        </div>
       </div>
 
-      <!-- Center bottom: Accuracy + Predictions row -->
+      <!-- Center bottom: Opportunities (auto-scanner) + Predictions -->
       <div class="bottom-area grid min-h-0 overflow-hidden">
-        <AccuracyTracker />
+        <OpportunitiesPanel />
         <PredictionPanel />
       </div>
     </div>
@@ -41,21 +46,25 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useMarketStore } from '../stores/marketStore.js';
 import { useNewsStore } from '../stores/newsStore.js';
 import { usePredictionStore } from '../stores/predictionStore.js';
+import { useScannerStore } from '../stores/scannerStore.js';
 import { healthApi } from '../services/api.js';
 import MarketTicker from '../components/layout/MarketTicker.vue';
 import NewsFeed from '../components/news/NewsFeed.vue';
 import StockChart from '../components/stocks/StockChart.vue';
 import WatchList from '../components/stocks/WatchList.vue';
-import AccuracyTracker from '../components/predictions/AccuracyTracker.vue';
+import OpportunitiesPanel from '../components/scanner/OpportunitiesPanel.vue';
+import AlertsPanel from '../components/scanner/AlertsPanel.vue';
 import PredictionPanel from '../components/predictions/PredictionPanel.vue';
 
 const marketStore = useMarketStore();
 const newsStore = useNewsStore();
 const predictionStore = usePredictionStore();
+const scannerStore = useScannerStore();
 
 const selectedSymbol = computed(() => marketStore.selectedSymbol);
 const backendDown = ref(false);
 let refreshInterval;
+let scannerInterval;
 
 async function checkBackend() {
   try {
@@ -78,10 +87,13 @@ async function init() {
     predictionStore.fetchAccuracy()
   ]);
 
+  // Auto-scanner results, alerts, earnings calendar — the board fills itself
+  scannerStore.init();
+
   // Open the live trade stream (chart + prices update in real time)
   marketStore.connectLive();
 
-  // Auto-run the model for the default symbol (full enrichment: targets, trend, rationale)
+  // Auto-run the model for the default symbol (trade plan, targets, reasons)
   try { await predictionStore.generateForSymbol(selectedSymbol.value); } catch { /* ignore */ }
 }
 
@@ -100,21 +112,28 @@ onMounted(() => {
       marketStore.fetchWatchlist()
     ]);
   }, 60_000);
+  // Pull fresh scan + alerts every 5 minutes (backend rescans itself on cron)
+  scannerInterval = setInterval(() => {
+    scannerStore.refresh();
+    predictionStore.fetchAccuracy();
+  }, 5 * 60_000);
 });
 
 onUnmounted(() => {
   clearInterval(refreshInterval);
+  clearInterval(scannerInterval);
   marketStore.disconnectLive();
 });
 </script>
 
 <style scoped>
 /* Responsive dashboard grid: side panels shrink via minmax (no clipping),
-   the chart takes the remaining width, and predictions get a real row height. */
+   the chart takes the remaining width, and the bottom row gets real height
+   for the opportunities list + trade plan. */
 .dash-grid {
   display: grid;
   grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);
-  grid-template-rows: minmax(0, 1fr) minmax(220px, 264px);
+  grid-template-rows: minmax(0, 1fr) minmax(240px, 300px);
   gap: 6px;
   padding: 6px;
 }
@@ -124,7 +143,7 @@ onUnmounted(() => {
 .bottom-area {
   grid-column: 2;
   grid-row: 2;
-  grid-template-columns: minmax(0, 1fr) minmax(230px, 300px);
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 330px);
   gap: 6px;
 }
 
@@ -146,6 +165,7 @@ onUnmounted(() => {
     grid-row: auto;
   }
   .chart-area { min-height: 360px; }
-  .bottom-area { grid-template-columns: 1fr; grid-auto-rows: minmax(220px, auto); }
+  .watch-area { min-height: 480px; }
+  .bottom-area { grid-template-columns: 1fr; grid-auto-rows: minmax(260px, auto); }
 }
 </style>

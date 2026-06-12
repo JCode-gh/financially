@@ -44,11 +44,13 @@ export async function getMarketNews(category = 'general') {
 
 export async function getStockNews(ticker) {
   const today = new Date().toISOString().split('T')[0];
-  const from = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  // 14-day window so the sentiment engine can compare today's article flow
+  // against a real baseline (buzz detection) and apply recency decay.
+  const from = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0];
   return cached(`stock_news_${ticker}`, 300_000, async () => {
     const data = await get('/company-news', { symbol: ticker, from, to: today });
     if (!data) return [];
-    return data.slice(0, 20).map(n => ({
+    return data.slice(0, 40).map(n => ({
       id: n.id,
       headline: n.headline,
       summary: n.summary,
@@ -161,20 +163,32 @@ export async function getFinnhubQuote(symbol) {
   });
 }
 
-// Symbol search via Finnhub
+// Symbol search via Finnhub — stocks, ETFs, ETPs, and ADRs (e.g. WEBN.DE)
+function isSearchableResult(r) {
+  if (['Common Stock', 'ETF', 'ETP', 'ADR'].includes(r.type)) return true;
+  // Some listings have empty type but a valid exchange suffix
+  return !r.type && /^[A-Z0-9-]+\.[A-Z]{1,4}$/.test(r.symbol);
+}
+
+function normalizeSearchType(type) {
+  if (type === 'ETP') return 'ETF';
+  return type || 'EQUITY';
+}
+
 export async function searchSymbols(query) {
   if (!query?.trim()) return [];
   return cached(`fh_search_${query}`, 300_000, async () => {
     const data = await get('/search', { q: query });
     if (!data?.result) return [];
     return data.result
-      .filter(r => r.type === 'Common Stock' && !r.symbol.includes('.'))
-      .slice(0, 10)
+      .filter(isSearchableResult)
+      .slice(0, 20)
       .map(r => ({
         symbol: r.symbol,
         name: r.description,
-        exchange: r.displaySymbol,
-        type: 'EQUITY'
+        exchange: r.displaySymbol || r.symbol.split('.').pop() || '',
+        type: normalizeSearchType(r.type),
+        ticker: r.symbol.includes('.') ? r.symbol.split('.')[0] : r.symbol
       }));
   });
 }

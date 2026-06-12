@@ -34,6 +34,15 @@ export const useNewsStore = defineStore('news', () => {
   }
 
   async function fetchStockNews(symbol, name) {
+    if (!symbol || typeof symbol !== 'string') {
+      stockArticles.value = [];
+      return;
+    }
+    const ticker = symbol.trim().toUpperCase();
+    if (!ticker || ['NULL', 'UNDEFINED', 'NONE'].includes(ticker)) {
+      stockArticles.value = [];
+      return;
+    }
     loading.value.stock = true;
     stockArticles.value = [];
     try {

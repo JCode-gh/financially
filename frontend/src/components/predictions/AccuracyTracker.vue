@@ -1,77 +1,56 @@
 <template>
-  <div class="card overflow-hidden">
-    <div class="flex items-center justify-between px-3 py-2 border-b border-surface-300">
-      <span class="label">Model Accuracy — Self-Learning</span>
-      <span class="text-xs font-mono text-gray-500">Iter #{{ accuracy?.modelIteration || 0 }}</span>
-    </div>
-
+  <div class="px-3 py-2">
     <div v-if="!accuracy" class="flex items-center justify-center h-12 text-gray-500 text-xs">
-      Loading accuracy metrics...
+      Loading model metrics...
     </div>
 
-    <div v-else class="flex items-stretch divide-x divide-surface-300">
-      <!-- Horizon accuracy blocks -->
-      <div
-        v-for="h in horizons"
-        :key="h.id"
-        class="flex-1 px-3 py-2 text-center"
-      >
-        <div class="text-xs text-gray-500 font-mono mb-1">{{ h.label }}</div>
-        <div class="text-lg font-bold font-mono" :class="accuracyColor(h.accuracy)">
-          {{ h.total > 0 ? (h.accuracy * 100).toFixed(1) + '%' : '—' }}
-        </div>
-        <div class="text-xs text-gray-600 font-mono">{{ h.correct }}/{{ h.total }}</div>
-        <!-- Mini accuracy bar -->
-        <div class="mt-1 h-1 bg-surface-300 rounded-full overflow-hidden">
-          <div
-            class="h-full rounded-full transition-all duration-700"
-            :class="accuracyBarColor(h.accuracy)"
-            :style="{ width: (h.accuracy * 100) + '%' }"
-          ></div>
-        </div>
-      </div>
-
-      <!-- Divider -->
-      <div class="flex-shrink-0 w-px bg-surface-300"></div>
-
-      <!-- Top indicators -->
-      <div class="px-3 py-2 min-w-0 flex-1">
-        <div class="text-xs text-gray-500 font-mono mb-1.5">Top Indicators</div>
-        <div class="space-y-0.5">
-          <div
-            v-for="ind in topIndicators"
-            :key="ind.name"
-            class="flex items-center gap-2 text-xs font-mono"
-          >
-            <span class="text-gray-400 w-16 truncate">{{ ind.name }}</span>
-            <div class="flex-1 h-1 bg-surface-300 rounded-full overflow-hidden">
-              <div
-                class="h-full transition-all"
-                :class="ind.accuracy >= 60 ? 'bg-bull/60' : ind.accuracy >= 50 ? 'bg-neutral/60' : 'bg-bear/60'"
-                :style="{ width: ind.accuracy + '%' }"
-              ></div>
-            </div>
-            <span :class="ind.accuracy >= 60 ? 'text-bull' : ind.accuracy >= 50 ? 'text-neutral' : 'text-bear'">
-              {{ ind.accuracy.toFixed(0) }}%
-            </span>
+    <template v-else>
+      <!-- Horizon accuracy: live (resolved predictions) vs backtest (walk-forward) -->
+      <div class="grid grid-cols-3 gap-2 mb-2">
+        <div v-for="h in horizons" :key="h.id" class="card-sm p-2 text-center">
+          <div class="text-xs text-gray-500 font-mono mb-0.5">{{ h.label }}</div>
+          <div class="text-base font-bold font-mono leading-none" :class="accuracyColor(h.live)">
+            {{ h.liveTotal > 0 ? (h.live * 100).toFixed(0) + '%' : '—' }}
           </div>
+          <div class="text-[10px] text-gray-600 font-mono">live {{ h.liveCorrect }}/{{ h.liveTotal }}</div>
+          <div class="mt-1 pt-1 border-t border-surface-300/50 text-[10px] font-mono flex items-center justify-center gap-1">
+            <span class="text-gray-500">backtest</span>
+            <span :class="accuracyColor(h.bt)">{{ h.btTotal > 0 ? (h.bt * 100).toFixed(1) + '%' : '—' }}</span>
+          </div>
+          <div class="text-[10px] text-gray-600 font-mono">{{ h.btTotal }} calls</div>
         </div>
       </div>
 
-      <!-- Model weights chart -->
-      <div class="px-3 py-2 min-w-0 flex-1 hidden lg:block">
-        <div class="text-xs text-gray-500 font-mono mb-1.5">Weight Distribution</div>
-        <div class="space-y-0.5">
-          <div v-for="(w, key) in accuracy.modelWeights" :key="key" class="flex items-center gap-1.5 text-xs font-mono">
-            <span class="text-gray-500 w-12 text-right truncate">{{ shortKey(key) }}</span>
-            <div class="flex-1 h-1.5 bg-surface-300 rounded-full overflow-hidden">
-              <div class="h-full bg-accent/50 transition-all" :style="{ width: (w * 100) + '%' }"></div>
-            </div>
-            <span class="text-gray-400 w-6 text-right">{{ (w * 100).toFixed(0) }}</span>
+      <div class="flex items-center gap-2 text-[10px] font-mono text-gray-600 mb-2">
+        <span>Iteration #{{ accuracy.modelIteration || 0 }}</span>
+        <span v-if="trainedAt" class="ml-auto">trained {{ trainedAt }}</span>
+      </div>
+
+      <!-- Signed weight distribution -->
+      <div class="text-xs text-gray-500 font-mono uppercase tracking-wider mb-1">Signal Weights (5d model)</div>
+      <div class="text-[10px] text-gray-600 font-mono mb-1.5">negative = model fades this signal in the current regime</div>
+      <div class="space-y-1">
+        <div v-for="w in sortedWeights" :key="w.key" class="flex items-center gap-1.5 text-xs font-mono">
+          <span class="text-gray-500 w-14 text-right truncate flex-shrink-0">{{ shortKey(w.key) }}</span>
+          <div class="flex-1 flex items-center h-3 relative">
+            <div class="absolute left-1/2 w-px h-3 bg-surface-300"></div>
+            <div
+              v-if="w.value >= 0"
+              class="absolute bg-accent/60 rounded-r h-1.5"
+              :style="{ left: '50%', width: Math.min(50, Math.abs(w.value) * 160) + '%' }"
+            ></div>
+            <div
+              v-else
+              class="absolute bg-neutral/70 rounded-l h-1.5"
+              :style="{ right: '50%', width: Math.min(50, Math.abs(w.value) * 160) + '%' }"
+            ></div>
           </div>
+          <span class="w-9 text-right flex-shrink-0" :class="w.value >= 0 ? 'text-gray-300' : 'text-neutral'">
+            {{ (w.value * 100).toFixed(0) }}
+          </span>
         </div>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
@@ -84,49 +63,49 @@ const accuracy = computed(() => predictionStore.accuracy);
 
 const horizons = computed(() => {
   if (!accuracy.value?.horizons) return [];
+  const btMap = {};
+  for (const b of accuracy.value.backtest || []) btMap[b.horizon] = b;
   return accuracy.value.horizons.map(h => ({
     id: h.horizon,
     label: h.horizon === '1d' ? '1 Day' : h.horizon === '5d' ? '5 Days' : '30 Days',
-    accuracy: h.accuracy || 0,
-    total: h.total || 0,
-    correct: h.correct || 0
+    live: h.accuracy || 0,
+    liveTotal: h.total || 0,
+    liveCorrect: h.correct || 0,
+    bt: btMap[h.horizon]?.accuracy || 0,
+    btTotal: btMap[h.horizon]?.total || 0
   }));
 });
 
-const topIndicators = computed(() => {
-  const stats = accuracy.value?.indicatorStats;
-  if (!stats) return [];
-  return Object.entries(stats)
-    .filter(([, v]) => v.total >= 3)
-    .map(([k, v]) => ({
-      name: shortKey(k),
-      accuracy: v.accuracy || 0,
-      total: v.total
-    }))
-    .sort((a, b) => b.accuracy - a.accuracy)
-    .slice(0, 5);
+const trainedAt = computed(() => {
+  const t = accuracy.value?.backtest?.[0]?.trainedAt;
+  if (!t) return null;
+  const iso = String(t).includes('T') ? t : t.replace(' ', 'T') + 'Z';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+});
+
+const sortedWeights = computed(() => {
+  const w = accuracy.value?.modelWeights;
+  if (!w) return [];
+  return Object.entries(w)
+    .map(([key, value]) => ({ key, value }))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
 });
 
 function accuracyColor(acc) {
-  if (acc === 0) return 'text-gray-500';
-  if (acc >= 0.65) return 'text-bull glow-bull';
-  if (acc >= 0.55) return 'text-bull/70';
-  if (acc >= 0.45) return 'text-neutral';
+  if (!acc) return 'text-gray-500';
+  if (acc >= 0.58) return 'text-bull';
+  if (acc >= 0.52) return 'text-bull/70';
+  if (acc >= 0.48) return 'text-neutral';
   return 'text-bear';
-}
-
-function accuracyBarColor(acc) {
-  if (acc >= 0.65) return 'bg-bull';
-  if (acc >= 0.55) return 'bg-bull/60';
-  if (acc >= 0.45) return 'bg-neutral';
-  return 'bg-bear';
 }
 
 function shortKey(key) {
   const map = {
     rsi: 'RSI', macd: 'MACD', sma_crossover: 'SMA-X',
     ema_crossover: 'EMA-X', bollinger: 'BB', volume_trend: 'Vol',
-    news_sentiment: 'News'
+    news_sentiment: 'News', stochastic: 'Stoch', adx_trend: 'ADX',
+    mfi: 'MFI', breakout: 'Brkout', momentum: 'Mom', trend_regime: 'Trend'
   };
   return map[key] || key;
 }

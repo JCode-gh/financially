@@ -23,12 +23,14 @@
       </div>
 
       <div v-else-if="prediction">
-        <!-- Trend + rationale banner -->
+        <!-- Trend banner -->
         <div class="px-2 pt-2 flex items-center gap-2 text-xs font-mono">
           <span class="px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide font-bold flex-shrink-0" :class="trendBadge">
             {{ prediction.trend?.label || '—' }}
           </span>
-          <span class="text-gray-400 truncate">{{ leadRationale }}</span>
+          <span v-if="prediction.newsSentiment?.buzz >= 1.8" class="text-[10px] text-gray-500">
+            news {{ prediction.newsSentiment.buzz }}× normal
+          </span>
         </div>
 
         <!-- Horizon predictions with price targets -->
@@ -60,21 +62,72 @@
           </div>
         </div>
 
-        <!-- Score + sentiment row -->
-        <div class="flex items-center gap-3 px-2 pb-2 text-xs font-mono">
-          <div class="flex items-center gap-1">
-            <span class="text-gray-500">Score</span>
-            <span :class="(prediction.predictions[0]?.score||0) >= 0 ? 'text-bull' : 'text-bear'">
-              {{ ((prediction.predictions[0]?.score || 0) * 100).toFixed(1) }}
+        <!-- Trade plan -->
+        <div v-if="plan" class="mx-2 mb-2 card-sm p-2"
+             :class="plan.direction === 'LONG' ? 'border-bull/30' : 'border-bear/30'">
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-xs font-mono font-bold uppercase tracking-wide"
+                  :class="plan.direction === 'LONG' ? 'text-bull' : 'text-bear'">
+              📋 Trade Plan — {{ plan.direction }}
+            </span>
+            <span class="text-[10px] font-mono" :class="plan.rr >= 2 ? 'text-bull' : plan.rr >= 1.3 ? 'text-neutral' : 'text-bear'">
+              R:R {{ plan.rr.toFixed(2) }}
             </span>
           </div>
-          <div v-if="prediction.newsSentiment" class="flex items-center gap-1">
-            <span class="text-gray-500">News</span>
-            <span :class="prediction.newsSentiment.label === 'bullish' ? 'text-bull' : prediction.newsSentiment.label === 'bearish' ? 'text-bear' : 'text-gray-400'">
-              {{ prediction.newsSentiment.label }}
+          <div class="grid grid-cols-3 gap-1.5 text-center font-mono">
+            <div>
+              <div class="text-[10px] text-gray-500">ENTRY</div>
+              <div class="text-xs font-bold text-gray-200">${{ plan.entry.toFixed(2) }}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-gray-500">STOP</div>
+              <div class="text-xs font-bold text-bear">${{ plan.stop.toFixed(2) }}</div>
+              <div class="text-[9px] text-gray-600 truncate" :title="plan.stopBasis">{{ plan.stopBasis }}</div>
+            </div>
+            <div>
+              <div class="text-[10px] text-gray-500">TARGET</div>
+              <div class="text-xs font-bold text-bull">${{ plan.target.toFixed(2) }}</div>
+              <div class="text-[9px] text-gray-600 truncate" :title="plan.targetBasis">{{ plan.targetBasis }}</div>
+            </div>
+          </div>
+          <div class="mt-1.5 pt-1.5 border-t border-surface-300/50 flex items-center justify-between text-[10px] font-mono text-gray-500">
+            <span>risk {{ plan.riskPct.toFixed(1) }}% / share</span>
+            <span>size ≤{{ plan.positionPct }}% of account (1% risk rule)</span>
+          </div>
+        </div>
+
+        <!-- Why: ranked reasons -->
+        <div v-if="prediction.reasons?.length" class="px-2 pb-2">
+          <div class="text-xs text-gray-500 font-mono uppercase tracking-wider mb-1">Why</div>
+          <div class="space-y-0.5">
+            <div v-for="(r, i) in prediction.reasons" :key="i" class="text-xs text-gray-300 font-mono flex gap-1.5">
+              <span class="text-gray-600">·</span><span>{{ r }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- News events detected -->
+        <div v-if="newsEvents.length || prediction.newsSentiment" class="px-2 pb-2">
+          <div class="text-xs text-gray-500 font-mono uppercase tracking-wider mb-1">
+            News Impact
+            <span v-if="prediction.newsSentiment" :class="newsColor" class="normal-case tracking-normal">
+              — {{ prediction.newsSentiment.label }}
+              <template v-if="prediction.newsSentiment.impactPct">
+                ({{ prediction.newsSentiment.impactPct > 0 ? '+' : '' }}{{ prediction.newsSentiment.impactPct }}% implied)
+              </template>
             </span>
           </div>
-          <div class="ml-auto text-gray-600">Iter #{{ prediction.modelIteration }}</div>
+          <div v-if="newsEvents.length" class="flex flex-wrap gap-1">
+            <span
+              v-for="ev in newsEvents"
+              :key="ev.id"
+              class="text-[10px] font-mono px-1.5 py-0.5 rounded border"
+              :class="ev.impact >= 0 ? 'bg-bull/10 text-bull border-bull/20' : 'bg-bear/10 text-bear border-bear/20'"
+            >
+              {{ ev.impact >= 0 ? '▲' : '▼' }} {{ ev.label }}{{ ev.count > 1 ? ' ×' + ev.count : '' }}
+            </span>
+          </div>
+          <div v-else class="text-[10px] font-mono text-gray-600">no market-moving events detected in recent coverage</div>
         </div>
 
         <!-- Signal breakdown -->
@@ -103,11 +156,22 @@
               <span class="w-10 text-right text-xs" :class="signal > 0 ? 'text-bull' : signal < 0 ? 'text-bear' : 'text-gray-500'">
                 {{ signal > 0 ? '+' : '' }}{{ signal.toFixed(2) }}
               </span>
-              <span class="w-7 text-right text-gray-600 text-xs">
-                {{ prediction.weights?.[key] ? (prediction.weights[key] * 100).toFixed(0) + '%' : '' }}
+              <span class="w-7 text-right text-xs"
+                    :class="(prediction.weights?.[key] ?? 0) < 0 ? 'text-neutral' : 'text-gray-600'"
+                    :title="(prediction.weights?.[key] ?? 0) < 0 ? 'negative weight: model fades this signal' : ''">
+                {{ prediction.weights?.[key] != null ? (prediction.weights[key] * 100).toFixed(0) + '%' : '' }}
               </span>
             </div>
           </div>
+        </div>
+
+        <!-- Key levels -->
+        <div v-if="prediction.indicators" class="px-2 pb-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] font-mono text-gray-500">
+          <span v-if="prediction.indicators.support">sup <span class="text-gray-300">${{ prediction.indicators.support }}</span></span>
+          <span v-if="prediction.indicators.resistance">res <span class="text-gray-300">${{ prediction.indicators.resistance }}</span></span>
+          <span v-if="prediction.indicators.adx">ADX <span class="text-gray-300">{{ prediction.indicators.adx }}</span></span>
+          <span v-if="prediction.indicators.week52Position != null">52w <span class="text-gray-300">{{ (prediction.indicators.week52Position * 100).toFixed(0) }}%</span></span>
+          <span class="ml-auto text-gray-600">Iter #{{ prediction.modelIteration }}</span>
         </div>
       </div>
     </div>
@@ -127,7 +191,15 @@ const prediction = computed(() => predictionStore.currentPrediction);
 const loading = computed(() => predictionStore.generating);
 const scrollEl = ref(null);
 
-const leadRationale = computed(() => prediction.value?.predictions?.[0]?.rationale || '');
+const plan = computed(() => prediction.value?.tradePlan || null);
+const newsEvents = computed(() => prediction.value?.newsSentiment?.topEvents || []);
+
+const newsColor = computed(() => {
+  const l = prediction.value?.newsSentiment?.label;
+  if (l === 'bullish') return 'text-bull';
+  if (l === 'bearish') return 'text-bear';
+  return 'text-gray-400';
+});
 
 const trendBadge = computed(() => {
   const d = prediction.value?.trend?.direction;
@@ -140,7 +212,9 @@ const displaySignals = computed(() => {
   const s = prediction.value?.signals;
   if (!s) return {};
   return Object.fromEntries(
-    Object.entries(s).filter(([, v]) => typeof v === 'number' && !isNaN(v))
+    Object.entries(s)
+      .filter(([, v]) => typeof v === 'number' && !isNaN(v))
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
   );
 });
 
@@ -170,7 +244,12 @@ function predIcon(p) {
   return '→';
 }
 function shortKey(key) {
-  const map = { rsi: 'RSI', macd: 'MACD', sma_crossover: 'SMA-X', ema_crossover: 'EMA-X', bollinger: 'BB', volume_trend: 'Vol', news_sentiment: 'News' };
+  const map = {
+    rsi: 'RSI', macd: 'MACD', sma_crossover: 'SMA-X', ema_crossover: 'EMA-X',
+    bollinger: 'BB', volume_trend: 'Vol', news_sentiment: 'News',
+    stochastic: 'Stoch', adx_trend: 'ADX', mfi: 'MFI', breakout: 'Brkout',
+    momentum: 'Mom', trend_regime: 'Trend'
+  };
   return map[key] || key;
 }
 </script>

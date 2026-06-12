@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import { getDB } from '../db/database.js';
 import { getStockNews } from '../services/finnhub.js';
+import { getRssStockNews } from '../services/rssNews.js';
 import { getHistoricalSeries } from '../services/historyProvider.js';
 import { generatePredictions, getModelWeights } from '../models/predictionEngine.js';
 import { evaluatePredictions, recalculateAccuracy } from '../jobs/predictionEvaluator.js';
+import { runBacktest, getBacktestResults } from '../jobs/backtester.js';
+import { SCAN_SYMBOLS } from '../jobs/scanner.js';
 
 const router = Router();
 
@@ -11,6 +14,7 @@ router.get('/accuracy', (req, res) => {
   const db = getDB();
   const metrics = db.prepare('SELECT * FROM accuracy_metrics ORDER BY horizon').all();
   const weights = getModelWeights();
+  const backtest = getBacktestResults();
 
   // Per-indicator accuracy breakdown from recent predictions
   const recentPreds = db.prepare(`
@@ -41,6 +45,11 @@ router.get('/accuracy', (req, res) => {
     success: true,
     data: {
       horizons: metrics,
+      backtest: backtest.map(b => ({
+        horizon: b.horizon, total: b.total, correct: b.correct,
+        accuracy: b.accuracy, symbols: b.symbols, trainedAt: b.trained_at,
+        indicators: b.details
+      })),
       modelWeights: weights.weights,
       modelIteration: weights.iteration,
       indicatorStats: Object.fromEntries(
@@ -52,6 +61,16 @@ router.get('/accuracy', (req, res) => {
       totalResolved: recentPreds.length
     }
   });
+});
+
+// Re-train the model by walking forward through cached history
+router.post('/backtest', async (req, res) => {
+  try {
+    const result = await runBacktest(SCAN_SYMBOLS);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 router.get('/history', (req, res) => {
@@ -83,20 +102,29 @@ router.get('/history', (req, res) => {
 router.post('/generate/:symbol', async (req, res) => {
   const ticker = req.params.symbol.toUpperCase();
   try {
-    const [candlesResult, articlesResult] = await Promise.allSettled([
-      getHistoricalSeries(ticker, 150),
-      getStockNews(ticker)
+    // 500 trading days — SMA200, 52-week range, golden/death cross all need deep history
+    const [candlesResult, finnhubResult, rssResult] = await Promise.allSettled([
+      getHistoricalSeries(ticker, 500),
+      getStockNews(ticker),
+      getRssStockNews(ticker)
     ]);
 
-    // Persistent multi-source provider (Twelve Data → Yahoo → Alpha Vantage → disk cache)
+    // Persistent multi-source provider (Twelve Data → Yahoo → Stooq → AV → disk cache)
     const candleData = candlesResult.status === 'fulfilled' ? candlesResult.value : null;
     if (!candleData || candleData.length < 30) {
       return res.status(503).json({ success: false, error: `Insufficient historical data for ${ticker} to run model` });
     }
 
-    const articles = (articlesResult.status === 'fulfilled' && articlesResult.value?.length)
-      ? articlesResult.value
-      : [];
+    const seen = new Set();
+    const articles = [
+      ...(finnhubResult.status === 'fulfilled' && finnhubResult.value ? finnhubResult.value : []),
+      ...(rssResult.status === 'fulfilled' && rssResult.value ? rssResult.value : [])
+    ].filter(a => {
+      const key = (a.headline || '').toLowerCase().slice(0, 80);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
     const result = await generatePredictions(ticker, candleData, articles);
     res.json({ success: true, data: result });

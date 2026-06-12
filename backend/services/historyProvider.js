@@ -18,6 +18,7 @@ import { fileURLToPath } from 'url';
 import { getHistorical as getYahoo } from './yahooFinance.js';
 import { getHistorical as getTwelve } from './twelveData.js';
 import { getHistorical as getAlpha } from './alphaVantage.js';
+import { getHistorical as getStooq } from './stooq.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = path.join(__dirname, '..', 'data', 'history');
@@ -41,6 +42,29 @@ export function readHistory(symbol) {
   } catch {
     return null;
   }
+}
+
+/** Instant quote from on-disk daily candles — no network. */
+export function quoteFromDisk(symbol, { maxAgeMs } = {}) {
+  const disk = readHistory(symbol);
+  if (!disk?.candles?.length) return null;
+  if (maxAgeMs != null && Date.now() - disk.fetchedAt > maxAgeMs) return null;
+
+  const last = disk.candles[disk.candles.length - 1];
+  const prev = disk.candles.length > 1 ? disk.candles[disk.candles.length - 2] : last;
+  const change = last.close - prev.close;
+  return {
+    symbol: disk.symbol || symbol.toUpperCase(),
+    price: last.close,
+    change,
+    changePct: prev.close ? (change / prev.close) * 100 : 0,
+    previousClose: prev.close,
+    open: last.open,
+    dayHigh: last.high,
+    dayLow: last.low,
+    volume: last.volume,
+    stale: true
+  };
 }
 
 function writeHistory(symbol, candles) {
@@ -72,16 +96,32 @@ function mergeHistory(symbol, fresh) {
 }
 
 // Fetch the deepest series available, trying sources in priority order.
+function isInternationalSymbol(symbol) {
+  return /^[A-Z0-9-]+\.[A-Z]{1,4}$/.test(symbol);
+}
+
 async function fetchDeepest(symbol) {
-  // Twelve Data first — most reliable free multi-year source (no-op without key).
+  const intl = isInternationalSymbol(symbol);
+
+  // EU/international tickers (WEBN.DE, KBCA.BR) — Yahoo chart API is the reliable source.
+  // Twelve Data free tier usually 404s on these, wasting quota and time.
+  if (intl) {
+    let live = await getYahoo(symbol, MAX_DAYS).catch(() => null);
+    if (live?.length) return live;
+    live = await getStooq(symbol, MAX_DAYS).catch(() => null);
+    if (live?.length) return live;
+    return null;
+  }
+
   let live = await getTwelve(symbol, MAX_DAYS).catch(() => null);
   if (live?.length) return live;
 
-  // Yahoo Finance — keyless, full 400 days when not rate-limited.
   live = await getYahoo(symbol, MAX_DAYS).catch(() => null);
   if (live?.length) return live;
 
-  // Alpha Vantage — free tier, ~100 most-recent days.
+  live = await getStooq(symbol, MAX_DAYS).catch(() => null);
+  if (live?.length) return live;
+
   live = await getAlpha(symbol, MAX_DAYS).catch(() => null);
   if (live?.length) return live;
 
@@ -93,12 +133,14 @@ async function fetchDeepest(symbol) {
  * Serves from the persistent disk cache when it's fresh and deep enough; otherwise
  * fetches the deepest live series, merges it to disk, and slices that.
  * Returns null only when no source and no cache can provide any data.
+ * `freshMs` lets bulk consumers (the scanner) accept older cache to save quota.
  */
-export async function getHistoricalSeries(symbol, days = 100) {
+export async function getHistoricalSeries(symbol, days = 100, freshMs = FRESH_MS) {
   symbol = symbol.toUpperCase();
 
   const disk = readHistory(symbol);
-  const isFresh = disk && Date.now() - disk.fetchedAt < FRESH_MS;
+  const isFresh = disk && Date.now() - disk.fetchedAt < freshMs;
+  // Serve from disk when fresh and deep enough for the requested window
   if (isFresh && disk.candles.length >= days) {
     return disk.candles.slice(-days);
   }

@@ -1,7 +1,6 @@
 import { getDB } from '../db/database.js';
-import { getHistorical } from '../services/yahooFinance.js';
-import { getHistorical as getAvHistorical } from '../services/alphaVantage.js';
-import { updateWeightsFromOutcome } from '../models/predictionEngine.js';
+import { getHistoricalSeries } from '../services/historyProvider.js';
+import { updateWeightsFromReturn } from '../models/predictionEngine.js';
 
 export async function evaluatePredictions() {
   const db = getDB();
@@ -40,9 +39,9 @@ export async function evaluatePredictions() {
 
   for (const [ticker, preds] of Object.entries(byTicker)) {
     try {
-      let candles = await getHistorical(ticker, 50).catch(() => null);
-      if (!candles?.length) candles = await getAvHistorical(ticker, 50).catch(() => null);
-      // Only resolve against real market data — skip (retry next run) if unavailable
+      // Multi-source provider (Twelve Data → Yahoo → Stooq → AV → disk cache).
+      // Only resolve against real market data — skip (retry next run) if unavailable.
+      const candles = await getHistoricalSeries(ticker, 60).catch(() => null);
       if (!candles || candles.length === 0) continue;
 
       const priceMap = {};
@@ -71,10 +70,10 @@ export async function evaluatePredictions() {
 
         update.run(actualPrice, wasCorrect ? 1 : 0, priceChangePct, pred.id);
 
-        // Update model weights based on this outcome
+        // Update this horizon's model weights from the realized forward return
         try {
           const signals = JSON.parse(pred.signals);
-          updateWeightsFromOutcome(signals, wasCorrect, pred.score);
+          updateWeightsFromReturn(signals, priceChangePct, pred.horizon);
         } catch { /* skip weight update if signals are malformed */ }
 
         resolved++;

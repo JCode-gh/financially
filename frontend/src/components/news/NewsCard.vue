@@ -18,6 +18,15 @@
         <p v-if="article.summary" class="text-gray-500 text-xs mt-1 line-clamp-1">
           {{ article.summary }}
         </p>
+        <!-- Detected market-moving events -->
+        <div v-if="article.events?.length" class="flex flex-wrap gap-1 mt-1">
+          <span
+            v-for="ev in article.events.slice(0, 3)"
+            :key="ev.id"
+            class="text-[9px] font-mono px-1 py-px rounded border leading-tight"
+            :class="ev.impact >= 0 ? 'bg-bull/10 text-bull border-bull/20' : 'bg-bear/10 text-bear border-bear/20'"
+          >{{ ev.label }}</span>
+        </div>
       </div>
     </div>
 

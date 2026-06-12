@@ -66,6 +66,12 @@
               <span class="font-mono text-xs font-semibold" :class="selectedSymbol === stock.symbol ? 'text-accent' : 'text-gray-200'">
                 {{ stock.symbol }}
               </span>
+              <span
+                v-if="earningsBadge(stock.symbol)"
+                class="text-[9px] font-mono px-1 py-px rounded leading-tight flex-shrink-0"
+                :class="earningsBadge(stock.symbol).cls"
+                :title="'Earnings ' + earningsBadge(stock.symbol).date"
+              >{{ earningsBadge(stock.symbol).text }}</span>
               <span class="text-gray-500 text-xs truncate hidden xl:block">{{ stock.name?.split(' ')[0] }}</span>
             </div>
             <!-- Mini sparkline-style bar -->
@@ -106,8 +112,10 @@
 <script setup>
 import { ref, computed } from 'vue';
 import { useMarketStore } from '../../stores/marketStore.js';
+import { useScannerStore } from '../../stores/scannerStore.js';
 
 const store = useMarketStore();
+const scanner = useScannerStore();
 const showAddInput = ref(false);
 const newSymbol = ref('');
 
@@ -115,6 +123,17 @@ const watchlistData = computed(() => store.watchlistData);
 const selectedSymbol = computed(() => store.selectedSymbol);
 const loading = computed(() => store.loading.watchlist);
 const topMovers = computed(() => store.topMovers);
+
+// "E-3" chip when earnings are within a week (amber when imminent)
+function earningsBadge(symbol) {
+  const e = scanner.earnings[symbol];
+  if (!e || e.daysUntil == null || e.daysUntil < 0 || e.daysUntil > 7) return null;
+  return {
+    text: e.daysUntil === 0 ? 'E today' : `E-${e.daysUntil}`,
+    date: e.date,
+    cls: e.daysUntil <= 2 ? 'bg-neutral/20 text-neutral' : 'bg-surface-300 text-gray-400'
+  };
+}
 
 async function select(symbol) {
   await store.selectSymbol(symbol);

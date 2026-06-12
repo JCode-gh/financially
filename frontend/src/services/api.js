@@ -11,7 +11,8 @@ export const stocksApi = {
   watchlist: (symbols) => http.get('/stocks/watchlist', { params: { symbols: symbols?.join(',') } }),
   quote: (symbol) => http.get(`/stocks/quote/${symbol}`),
   historical: (symbol, days = 100, interval = '1day') => http.get(`/stocks/historical/${symbol}`, { params: { days, interval } }),
-  search: (q) => http.get('/stocks/search', { params: { q } })
+  search: (q) => http.get('/stocks/search', { params: { q } }),
+  resolve: (q) => http.get('/stocks/resolve', { params: { q } })
 };
 
 // News
@@ -26,7 +27,16 @@ export const predictionsApi = {
   history: (params) => http.get('/predictions/history', { params }),
   forSymbol: (symbol) => http.get(`/predictions/${symbol}`),
   generate: (symbol) => http.post(`/predictions/generate/${symbol}`),
-  evaluate: () => http.post('/predictions/evaluate')
+  evaluate: () => http.post('/predictions/evaluate'),
+  backtest: () => http.post('/predictions/backtest')
+};
+
+// Scanner (auto opportunities, alerts, earnings calendar)
+export const scannerApi = {
+  latest: () => http.get('/scanner/latest'),
+  run: (symbols) => http.post('/scanner/run', symbols ? { symbols } : {}),
+  alerts: (limit = 30) => http.get('/scanner/alerts', { params: { limit } }),
+  earnings: (symbols) => http.get('/scanner/earnings', { params: { symbols: symbols?.join(',') } })
 };
 
 // Health

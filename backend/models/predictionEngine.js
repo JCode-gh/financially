@@ -1,9 +1,16 @@
-import { getDB } from '../db/database.js';
+import { getDB, DEFAULT_WEIGHTS } from '../db/database.js';
 import { computeAllIndicators, generateSignals } from './technicalAnalysis.js';
 import { analyzeArticles } from './sentimentAnalyzer.js';
 
 const LEARNING_RATE = 0.015;
-const PREDICTION_THRESHOLDS = { strong: 0.35, moderate: 0.18 };
+// Per-horizon action thresholds, set where the walk-forward calibration curve
+// shows a real edge (top-quartile conviction). Below `moderate` the honest
+// answer is NEUTRAL — no edge, no call.
+const PREDICTION_THRESHOLDS = {
+  '1d':  { moderate: 0.30, strong: 0.45 },
+  '5d':  { moderate: 0.20, strong: 0.32 },
+  '30d': { moderate: 0.45, strong: 0.70 }
+};
 
 // ATR-scaled expected move + price target for a horizon (in trading days).
 function horizonTarget(days, score, price, atr) {
@@ -20,56 +27,172 @@ function horizonTarget(days, score, price, atr) {
   };
 }
 
-// Plain-English reasoning behind a call.
-function buildRationale(trend, indicators, direction) {
-  const parts = [trend.label];
-  if (indicators.macd) parts.push(indicators.macd.histogram >= 0 ? 'MACD rising' : 'MACD falling');
-  if (indicators.rsi != null) {
-    const r = Math.round(indicators.rsi);
-    if (indicators.rsi > 70) parts.push(`RSI ${r} (hot)`);
-    else if (indicators.rsi < 30) parts.push(`RSI ${r} (oversold)`);
-    else parts.push(`RSI ${r}`);
+// Concrete trade plan: entry, stop (ATR- and support/resistance-aware), target,
+// risk/reward, and a position-size suggestion for a 1%-of-account risk budget.
+export function buildTradePlan(direction, indicators) {
+  const price = indicators.price;
+  const atr = indicators.atr || price * 0.02;
+  const { sr } = indicators;
+  if (!direction || !price) return null;
+
+  let entry = price, stop, target, stopBasis = 'ATR', targetBasis = 'ATR';
+
+  if (direction > 0) {
+    stop = price - 1.6 * atr;
+    if (sr?.support && price - sr.support.price < 2.5 * atr && sr.support.price < price) {
+      stop = Math.min(stop, sr.support.price * 0.99); // just below support
+      stopBasis = `support $${sr.support.price.toFixed(2)}`;
+    }
+    target = price + 2.4 * atr;
+    if (sr?.resistance && sr.resistance.price - price < 5 * atr && sr.resistance.price > price * 1.01) {
+      target = sr.resistance.price * 0.998; // just below resistance
+      targetBasis = `resistance $${sr.resistance.price.toFixed(2)}`;
+    }
+  } else {
+    stop = price + 1.6 * atr;
+    if (sr?.resistance && sr.resistance.price - price < 2.5 * atr && sr.resistance.price > price) {
+      stop = Math.max(stop, sr.resistance.price * 1.01); // just above resistance
+      stopBasis = `resistance $${sr.resistance.price.toFixed(2)}`;
+    }
+    target = price - 2.4 * atr;
+    if (sr?.support && price - sr.support.price < 5 * atr && sr.support.price < price * 0.99) {
+      target = sr.support.price * 1.002;
+      targetBasis = `support $${sr.support.price.toFixed(2)}`;
+    }
   }
-  if (indicators.volumeSignal > 0) parts.push('volume confirming');
-  else if (indicators.volumeSignal < 0) parts.push('volume diverging');
-  const dirWord = direction > 0 ? 'bullish' : direction < 0 ? 'bearish' : 'range-bound';
-  return `${parts.join(' · ')} → ${dirWord}`;
+
+  const risk = Math.abs(entry - stop);
+  const reward = Math.abs(target - entry);
+  const rr = risk > 0 ? reward / risk : 0;
+  const riskPct = (risk / entry) * 100;
+  // Position sized so a stop-out costs ~1% of the account, capped at 25%.
+  const positionPct = riskPct > 0 ? Math.min(25, Math.round(100 / riskPct)) : 0;
+
+  return {
+    direction: direction > 0 ? 'LONG' : 'SHORT',
+    entry: parseFloat(entry.toFixed(2)),
+    stop: parseFloat(stop.toFixed(2)),
+    target: parseFloat(target.toFixed(2)),
+    rr: parseFloat(rr.toFixed(2)),
+    riskPct: parseFloat(riskPct.toFixed(2)),
+    positionPct,
+    stopBasis,
+    targetBasis
+  };
 }
 
-export function getModelWeights() {
+// Human-readable reasons behind a call — ranked, specific, no jargon walls.
+export function buildReasons(indicators, signals, newsSentiment, direction) {
+  const reasons = [];
+  const { trend, rsi, macd, adx, stochastic, mfi, week52, maCross, breakout, sr } = indicators;
+
+  if (trend?.direction) {
+    const adxTxt = adx?.adx != null ? ` (ADX ${Math.round(adx.adx)})` : '';
+    reasons.push({ w: trend.strength * 1.2, text: `${trend.label}${adxTxt}` });
+  }
+  if (maCross?.golden) reasons.push({ w: 1.4, text: 'Golden cross — SMA50 crossed above SMA200' });
+  if (maCross?.death) reasons.push({ w: 1.4, text: 'Death cross — SMA50 crossed below SMA200' });
+  if (macd?.crossed_above) reasons.push({ w: 1.1, text: 'MACD bullish cross today' });
+  else if (macd?.crossed_below) reasons.push({ w: 1.1, text: 'MACD bearish cross today' });
+  else if (macd) reasons.push({ w: 0.4, text: macd.histogram >= 0 ? 'MACD momentum rising' : 'MACD momentum falling' });
+
+  if (rsi != null) {
+    if (rsi >= 75) reasons.push({ w: 0.9, text: `RSI ${Math.round(rsi)} — overbought` });
+    else if (rsi <= 25) reasons.push({ w: 0.9, text: `RSI ${Math.round(rsi)} — oversold` });
+    else reasons.push({ w: 0.2, text: `RSI ${Math.round(rsi)}` });
+  }
+  if (breakout?.type === 'up') reasons.push({ w: 1.0, text: 'Breakout above 20-day high' + (breakout.signal === 1 ? ' on heavy volume' : '') });
+  if (breakout?.type === 'down') reasons.push({ w: 1.0, text: 'Breakdown below 20-day low' + (breakout.signal === -1 ? ' on heavy volume' : '') });
+  if (week52) {
+    if (week52.position > 0.95) reasons.push({ w: 0.7, text: 'Trading at 52-week highs' });
+    else if (week52.position < 0.08) reasons.push({ w: 0.7, text: 'Near 52-week lows' });
+  }
+  if (stochastic && signals.stochastic != null && Math.abs(signals.stochastic) >= 1) {
+    reasons.push({ w: 0.8, text: signals.stochastic > 0 ? 'Stochastic bullish cross from oversold' : 'Stochastic bearish cross from overbought' });
+  }
+  if (mfi != null && (mfi < 20 || mfi > 80)) {
+    reasons.push({ w: 0.6, text: mfi < 20 ? `Money flow washed out (MFI ${Math.round(mfi)})` : `Money flow stretched (MFI ${Math.round(mfi)})` });
+  }
+  if (signals.volume_trend != null && Math.abs(signals.volume_trend) > 0.5) {
+    reasons.push({ w: 0.6, text: signals.volume_trend > 0 ? 'Volume confirms buyers in control' : 'Volume shows distribution' });
+  }
+  if (newsSentiment && Math.abs(newsSentiment.score) > 0.15) {
+    const evTxt = newsSentiment.topEvents?.length
+      ? ` — ${newsSentiment.topEvents.slice(0, 2).map(e => e.label).join(', ')}`
+      : '';
+    reasons.push({ w: 0.9 + Math.abs(newsSentiment.score), text: `News ${newsSentiment.label}${evTxt}` });
+  }
+  if (sr?.resistance && direction > 0 && (sr.resistance.price - indicators.price) / indicators.price < 0.02) {
+    reasons.push({ w: 0.8, text: `Resistance overhead at $${sr.resistance.price.toFixed(2)}` });
+  }
+  if (sr?.support && direction < 0 && (indicators.price - sr.support.price) / indicators.price < 0.02) {
+    reasons.push({ w: 0.8, text: `Support nearby at $${sr.support.price.toFixed(2)}` });
+  }
+
+  return reasons.sort((a, b) => b.w - a.w).slice(0, 6).map(r => r.text);
+}
+
+export function getModelWeights(name = 'global') {
   const db = getDB();
-  const row = db.prepare('SELECT weights, iteration FROM model_weights WHERE name = ?').get('global');
+  const row = db.prepare('SELECT weights, iteration FROM model_weights WHERE name = ?').get(name)
+    || db.prepare('SELECT weights, iteration FROM model_weights WHERE name = ?').get('global');
+  if (!row) return { weights: { ...DEFAULT_WEIGHTS }, iteration: 0 };
   return {
     weights: JSON.parse(row.weights),
     iteration: row.iteration
   };
 }
 
-export function saveModelWeights(weights, iteration) {
+// One weight set per horizon — each is trained against its own forward return,
+// because what predicts tomorrow (mean reversion) differs from what predicts
+// next month (trend/drift).
+export function getHorizonWeights() {
+  return {
+    '1d': getModelWeights('h1d'),
+    '5d': getModelWeights('h5d'),
+    '30d': getModelWeights('h30d')
+  };
+}
+
+export function saveModelWeights(weights, iteration, name = 'global') {
   const db = getDB();
   db.prepare(`
     UPDATE model_weights SET weights = ?, iteration = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE name = 'global'
-  `).run(JSON.stringify(weights), iteration);
+    WHERE name = ?
+  `).run(JSON.stringify(weights), iteration, name);
+  // 'global' mirrors the 5d set (the app's swing anchor) for anything legacy
+  if (name === 'h5d') {
+    db.prepare(`
+      UPDATE model_weights SET weights = ?, iteration = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE name = 'global'
+    `).run(JSON.stringify(weights), iteration);
+  }
 }
 
+// Weights are SIGNED: a negative weight means the model has learned that, in
+// the current market regime, this signal works as a contrarian indicator
+// (e.g. fading momentum in a choppy market). Normalized by total |weight|.
 export function computeEnsembleScore(signals, weights) {
   let score = 0;
   let totalWeight = 0;
   for (const [indicator, signal] of Object.entries(signals)) {
     if (weights[indicator] !== undefined && signal !== undefined) {
       score += weights[indicator] * signal;
-      totalWeight += weights[indicator];
+      totalWeight += Math.abs(weights[indicator]);
     }
   }
   return totalWeight > 0 ? score / totalWeight : 0;
 }
 
-export function scoreToPrediction(score) {
-  if (score >= PREDICTION_THRESHOLDS.strong) return { prediction: 'UP', confidence: Math.min(0.95, 0.6 + score * 0.5) };
-  if (score >= PREDICTION_THRESHOLDS.moderate) return { prediction: 'UP', confidence: 0.55 + score * 0.3 };
-  if (score <= -PREDICTION_THRESHOLDS.strong) return { prediction: 'DOWN', confidence: Math.min(0.95, 0.6 + Math.abs(score) * 0.5) };
-  if (score <= -PREDICTION_THRESHOLDS.moderate) return { prediction: 'DOWN', confidence: 0.55 + Math.abs(score) * 0.3 };
+export function scoreToPrediction(score, horizon = '5d') {
+  const t = PREDICTION_THRESHOLDS[horizon] || PREDICTION_THRESHOLDS['5d'];
+  const a = Math.abs(score);
+  if (a >= t.strong) {
+    return { prediction: score > 0 ? 'UP' : 'DOWN', confidence: Math.min(0.85, 0.62 + (a - t.strong) * 0.3) };
+  }
+  if (a >= t.moderate) {
+    return { prediction: score > 0 ? 'UP' : 'DOWN', confidence: 0.55 + (a - t.moderate) / (t.strong - t.moderate) * 0.07 };
+  }
   return { prediction: 'NEUTRAL', confidence: 0.5 };
 }
 
@@ -84,42 +207,73 @@ function addTradingDays(dateStr, days) {
   return d.toISOString().split('T')[0];
 }
 
-export async function generatePredictions(ticker, candles, articles = []) {
-  const db = getDB();
-  const { weights, iteration } = getModelWeights();
+// Per-horizon drift: equity markets drift upward (~8-10%/yr), so absent
+// bearish evidence longer horizons lean UP — that's the base rate, not optimism.
+export const HORIZON_BLEND = {
+  '1d':  { drift: 0.012 },
+  '5d':  { drift: 0.030 },
+  '30d': { drift: 0.060 }
+};
 
+// The score is the learned ensemble + drift, with a conviction gain so genuine
+// agreement clears the action thresholds. No hard-coded trend backbone: the
+// trend regime votes as a weighted signal like everything else, and the
+// walk-forward learning decides how much it deserves in the current market.
+export function blendForHorizon(technicalScore, horizon) {
+  const b = HORIZON_BLEND[horizon] || HORIZON_BLEND['5d'];
+  const s = technicalScore + b.drift;
+  return Math.max(-1, Math.min(1, s * 1.7));
+}
+
+// Signal components, shared by live predictions, the scanner, and the
+// backtester (so they always agree). Weight-independent.
+export function computeSignalSet(candles, newsScore = null) {
   const indicators = computeAllIndicators(candles);
-  const technicalSignals = generateSignals(indicators);
-
-  // News sentiment signal
-  const newsSentiment = analyzeArticles(articles);
-  technicalSignals.news_sentiment = newsSentiment.score;
-
-  // Trend-aware adjustment: in a strong trend, damp counter-trend oscillators
-  // (e.g. an "overbought" RSI in a strong uptrend should not force a SELL/NEUTRAL).
+  const signals = generateSignals(indicators);
+  if (newsScore != null) signals.news_sentiment = newsScore;
   const trend = indicators.trend || { direction: 0, strength: 0, label: 'n/a' };
-  const adjustedSignals = { ...technicalSignals };
-  if (trend.strength > 0.5 && trend.direction !== 0) {
-    for (const k of ['rsi', 'bollinger']) {
-      if (adjustedSignals[k] != null && Math.sign(adjustedSignals[k]) === -trend.direction) {
-        adjustedSignals[k] *= 0.3;
-      }
-    }
+  return { signals, indicators, trend };
+}
+
+// Returns the 5d blend as `score` (the app's swing-trading anchor) plus all
+// per-horizon scores, each computed from its own trained weight set.
+export function computeScore(candles, horizonWeights, newsScore = null) {
+  const { signals, indicators, trend } = computeSignalSet(candles, newsScore);
+
+  const scores = {};
+  for (const h of ['1d', '5d', '30d']) {
+    const w = horizonWeights[h]?.weights || horizonWeights[h] || {};
+    scores[h] = blendForHorizon(computeEnsembleScore(signals, w), h);
   }
 
-  // Decisive blend: trend-following backbone (55%) + self-learning technical ensemble (45%),
-  // with a conviction gain so genuine signals clear the thresholds instead of averaging to ~0.
-  const technicalScore = computeEnsembleScore(adjustedSignals, weights);
-  const trendScore = trend.direction * trend.strength;
-  let score = 0.55 * trendScore + 0.45 * technicalScore;
-  score = Math.max(-1, Math.min(1, score * 1.6));
+  return {
+    score: scores['5d'],
+    scores,
+    trendScore: trend.direction * trend.strength,
+    indicators,
+    signals,
+    trend
+  };
+}
+
+export async function generatePredictions(ticker, candles, articles = []) {
+  const db = getDB();
+  const horizonWeights = getHorizonWeights();
+  const { weights, iteration } = horizonWeights['5d'];
+
+  // News sentiment + event impact for this ticker
+  const newsSentiment = analyzeArticles(articles, ticker);
+
+  const { score, scores, indicators, signals: adjustedSignals, trend } = computeScore(candles, horizonWeights, newsSentiment.score);
 
   const price = indicators.price;
   const atr = indicators.atr || price * 0.02;
   const today = new Date().toISOString().split('T')[0];
-  const direction = score >= PREDICTION_THRESHOLDS.moderate ? 1
-    : score <= -PREDICTION_THRESHOLDS.moderate ? -1 : 0;
-  const rationale = buildRationale(trend, indicators, direction);
+  const t5 = PREDICTION_THRESHOLDS['5d'];
+  const direction = score >= t5.moderate ? 1 : score <= -t5.moderate ? -1 : 0;
+  const reasons = buildReasons(indicators, adjustedSignals, newsSentiment, direction);
+  const rationale = reasons.slice(0, 3).join(' · ');
+  const tradePlan = direction !== 0 ? buildTradePlan(direction, indicators) : null;
 
   const horizons = [
     { id: '1d', days: 1 },
@@ -135,7 +289,8 @@ export async function generatePredictions(ticker, candles, articles = []) {
   `);
 
   for (const { id, days } of horizons) {
-    const tgt = horizonTarget(days, score, price, atr);
+    const hScore = scores[id] ?? score;
+    const tgt = horizonTarget(days, hScore, price, atr);
     const enrich = {
       expectedMovePct: parseFloat(tgt.expectedMovePct.toFixed(2)),
       targetPrice: parseFloat(tgt.targetPrice.toFixed(2)),
@@ -160,24 +315,26 @@ export async function generatePredictions(ticker, candles, articles = []) {
       continue;
     }
 
-    const { prediction, confidence } = scoreToPrediction(score);
+    const { prediction, confidence } = scoreToPrediction(hScore, id);
     const targetDate = addTradingDays(today, days);
 
     const result = insert.run(
       ticker, targetDate, id, prediction,
       parseFloat(confidence.toFixed(4)),
-      parseFloat(score.toFixed(6)),
+      parseFloat(hScore.toFixed(6)),
       price,
       JSON.stringify(adjustedSignals),
-      JSON.stringify(weights)
+      JSON.stringify(horizonWeights[id]?.weights || weights)
     );
-    predictions.push({ id: result.lastInsertRowid, ticker, horizon: id, prediction, confidence, score, targetDate, ...enrich });
+    predictions.push({ id: result.lastInsertRowid, ticker, horizon: id, prediction, confidence, score: hScore, targetDate, ...enrich });
   }
 
   return {
     ticker,
     predictions,
     signals: adjustedSignals,
+    tradePlan,
+    reasons,
     indicators: {
       rsi: indicators.rsi ? parseFloat(indicators.rsi.toFixed(2)) : null,
       macd: indicators.macd ? {
@@ -193,45 +350,68 @@ export async function generatePredictions(ticker, candles, articles = []) {
       } : null,
       sma20: indicators.sma20 ? parseFloat(indicators.sma20.toFixed(2)) : null,
       sma50: indicators.sma50 ? parseFloat(indicators.sma50.toFixed(2)) : null,
+      sma200: indicators.sma200 ? parseFloat(indicators.sma200.toFixed(2)) : null,
       atr: indicators.atr ? parseFloat(indicators.atr.toFixed(2)) : null,
+      adx: indicators.adx ? parseFloat(indicators.adx.adx.toFixed(1)) : null,
+      stochK: indicators.stochastic ? parseFloat(indicators.stochastic.k.toFixed(1)) : null,
+      mfi: indicators.mfi != null ? parseFloat(indicators.mfi.toFixed(1)) : null,
+      week52Position: indicators.week52 ? parseFloat(indicators.week52.position.toFixed(3)) : null,
+      support: indicators.sr?.support ? parseFloat(indicators.sr.support.price.toFixed(2)) : null,
+      resistance: indicators.sr?.resistance ? parseFloat(indicators.sr.resistance.price.toFixed(2)) : null,
       price: indicators.price
     },
     trend: { label: trend.label, direction: trend.direction, strength: parseFloat((trend.strength || 0).toFixed(2)) },
     newsSentiment: {
       score: parseFloat(newsSentiment.score.toFixed(3)),
-      label: newsSentiment.label
+      label: newsSentiment.label,
+      impactPct: newsSentiment.impactPct,
+      buzz: newsSentiment.buzz,
+      topEvents: newsSentiment.topEvents,
+      articleCount: newsSentiment.articleCount
     },
     weights,
     modelIteration: iteration
   };
 }
 
-// Self-learning weight update using perceptron-style online learning
-export function updateWeightsFromOutcome(signals, wasCorrect, predictionScore) {
-  const { weights, iteration } = getModelWeights();
-  const updatedWeights = { ...weights };
+// Self-learning weight update from a realized forward return (live evaluator
+// path). Each horizon's weight set learns only from its own horizon's outcomes.
+export function updateWeightsFromReturn(signals, priceChangePct, horizon = '5d') {
+  const name = { '1d': 'h1d', '5d': 'h5d', '30d': 'h30d' }[horizon] || 'h5d';
+  const { weights, iteration } = getModelWeights(name);
+  const updatedWeights = applyReturnToWeights(weights, signals, priceChangePct);
+  saveModelWeights(updatedWeights, iteration + 1, name);
+  return updatedWeights;
+}
 
-  const direction = predictionScore >= 0 ? 1 : -1;
+// Hebbian return-correlation learning (pure, no DB — shared with the backtester):
+//   w_i += lr × signal_i × clamp(forwardReturn)
+// Each signal's weight tracks its CURRENT correlation with forward returns.
+// A signal that keeps pointing the wrong way doesn't just shrink — it goes
+// NEGATIVE, so the ensemble automatically fades it until the regime turns.
+// No assumptions about which regime we're in; the data decides.
+export function applyReturnToWeights(weights, signals, fwdReturnPct, learningRate = LEARNING_RATE) {
+  const updatedWeights = { ...weights };
+  // ±1.5% forward move saturates the teaching signal (robust to gaps/crashes)
+  const target = Math.max(-1, Math.min(1, fwdReturnPct / 1.5));
 
   for (const [indicator, weight] of Object.entries(updatedWeights)) {
     const signal = signals[indicator];
     if (signal === undefined || signal === 0) continue;
-
-    const signalDirection = signal * direction;
-    // If correct: reinforce the signal that contributed; if wrong: weaken it
-    const delta = wasCorrect
-      ? LEARNING_RATE * Math.abs(signal)
-      : -LEARNING_RATE * Math.abs(signal);
-
-    updatedWeights[indicator] = Math.max(0.02, weight + delta);
+    updatedWeights[indicator] = weight + learningRate * signal * target;
   }
 
-  // Normalize so weights sum to 1
-  const total = Object.values(updatedWeights).reduce((a, b) => a + b, 0);
+  // Cap any single |weight| at 0.30 (no monoculture), normalize Σ|w| = 1.
   for (const key of Object.keys(updatedWeights)) {
-    updatedWeights[key] = parseFloat((updatedWeights[key] / total).toFixed(6));
+    updatedWeights[key] = Math.max(-0.30, Math.min(0.30, updatedWeights[key]));
   }
-
-  saveModelWeights(updatedWeights, iteration + 1);
+  const total = Object.values(updatedWeights).reduce((a, b) => a + Math.abs(b), 0);
+  if (total > 0) {
+    for (const key of Object.keys(updatedWeights)) {
+      updatedWeights[key] = parseFloat((updatedWeights[key] / total).toFixed(6));
+    }
+  }
   return updatedWeights;
 }
+
+export { PREDICTION_THRESHOLDS };

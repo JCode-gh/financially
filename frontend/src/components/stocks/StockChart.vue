@@ -50,16 +50,32 @@
       </div>
 
       <!-- Error state -->
-      <div v-if="chartError && !loading" class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-xs font-mono z-10">
+      <div v-if="chartError && !loading" class="absolute inset-0 flex flex-col items-center justify-center gap-3 text-gray-500 text-xs font-mono z-10 px-6 text-center">
         <svg class="w-8 h-8 opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
         <span>{{ chartError }}</span>
+        <span v-if="autoRetrying" class="text-gray-600 animate-pulse">
+          Retrying{{ retryAttempt > 0 ? ` (${retryAttempt})` : '' }}…
+        </span>
+        <button v-else @click="retryLoad" class="text-accent hover:text-accent/70 border border-accent/30 rounded px-3 py-1.5 mt-1">
+          Retry now
+        </button>
       </div>
     </div>
 
-    <!-- Indicator strip -->
-    <div v-if="indicators" class="flex gap-3 px-3 py-1.5 border-t border-surface-300/50 flex-shrink-0 text-xs font-mono overflow-x-auto">
+    <!-- Prediction legend (when targets are drawn on chart) -->
+    <div v-if="showPredictions && predictionLegend.length" class="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 border-t border-surface-300/50 flex-shrink-0 text-xs font-mono">
+      <div v-for="item in predictionLegend" :key="item.horizon" class="flex items-center gap-1.5">
+        <span class="w-3 h-0.5 rounded" :style="{ backgroundColor: item.color }"></span>
+        <span class="text-gray-500">{{ item.label }}</span>
+        <span :class="item.textColor">${{ item.price }}</span>
+        <span class="text-gray-600">by {{ item.date }}</span>
+      </div>
+    </div>
+
+    <!-- Indicator strip (hidden on simplified stock view) -->
+    <div v-else-if="indicators" class="flex gap-3 px-3 py-1.5 border-t border-surface-300/50 flex-shrink-0 text-xs font-mono overflow-x-auto">
       <div v-if="indicators.rsi !== null" class="flex items-center gap-1 flex-shrink-0">
         <span class="text-gray-500">RSI</span><span :class="rsiColor">{{ indicators.rsi?.toFixed(1) }}</span>
       </div>
@@ -72,6 +88,9 @@
       </div>
       <div v-if="indicators.sma50" class="flex items-center gap-1 flex-shrink-0">
         <span class="text-purple-400">━</span><span class="text-gray-500">SMA50</span><span class="text-gray-300">${{ indicators.sma50?.toFixed(2) }}</span>
+      </div>
+      <div v-if="indicators.sma200" class="flex items-center gap-1 flex-shrink-0">
+        <span class="text-amber-400">━</span><span class="text-gray-500">SMA200</span><span class="text-gray-300">${{ indicators.sma200?.toFixed(2) }}</span>
       </div>
       <div v-if="indicators.atr" class="flex items-center gap-1 flex-shrink-0">
         <span class="text-gray-500">ATR</span><span class="text-gray-300">${{ indicators.atr?.toFixed(2) }}</span>
@@ -89,7 +108,10 @@ import { createChart, CrosshairMode, ColorType } from 'lightweight-charts';
 import { useMarketStore } from '../../stores/marketStore.js';
 import { usePredictionStore } from '../../stores/predictionStore.js';
 
-const props = defineProps({ symbol: String });
+const props = defineProps({
+  symbol: String,
+  showPredictions: { type: Boolean, default: false }
+});
 
 const marketStore = useMarketStore();
 const predictionStore = usePredictionStore();
@@ -98,24 +120,72 @@ const quote = computed(() => marketStore.selectedQuote);
 const loading = computed(() => marketStore.loading.historical);
 const indicators = computed(() => predictionStore.currentPrediction?.indicators || null);
 
-// Timeframes: 1D/1W = intraday; 1M..5Y = daily (counts are trading days/bars)
+// Timeframes: intraday fetched per range; daily loads deep history once then slices locally
+const DAILY_DEEP_DAYS = 5000;
+const DAILY_INITIAL_DAYS = 400;
 const timeframes = [
-  { label: '1D', interval: '15min', count: 32 },
-  { label: '1W', interval: '1h', count: 40 },
+  { label: '1D', interval: '15min', count: 78 },
+  { label: '1W', interval: '1h', count: 120 },
   { label: '1M', interval: '1day', count: 21 },
   { label: '3M', interval: '1day', count: 63 },
   { label: '6M', interval: '1day', count: 126 },
   { label: '1Y', interval: '1day', count: 252 },
-  { label: '5Y', interval: '1day', count: 1260 }
+  { label: '5Y', interval: '1day', count: 1260 },
+  { label: 'MAX', interval: '1day', count: DAILY_DEEP_DAYS }
 ];
-const activeTf = ref('3M');
+const activeTf = ref('1Y');
 const legend = ref(null);
 const priceFlash = ref('');
 let prevPrice = null;
 
 const chartContainer = ref(null);
-let chart, candleSeries, volumeSeries, sma20Series, sma50Series, ro;
+const predictionLegend = ref([]);
+const autoRetrying = ref(false);
+const retryAttempt = ref(0);
+let chart, candleSeries, volumeSeries, sma20Series, sma50Series, sma200Series, forecastSeries, ro;
 let lastBar = null; // most recent candle, mutated live by streamed trades
+let priceLines = [];
+let retryTimer = null;
+let loadGeneration = 0;
+
+const RETRY_BASE_MS = 2000;
+const RETRY_MAX_MS = 30000;
+
+function clearAutoRetry() {
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  autoRetrying.value = false;
+}
+
+function isChartLoadFailed() {
+  const sym = props.symbol || marketStore.selectedSymbol;
+  if (!sym) return false;
+  return !marketStore.loading.historical && marketStore.historicalData.length === 0;
+}
+
+function scheduleAutoRetryIfNeeded() {
+  clearAutoRetry();
+  if (!isChartLoadFailed()) {
+    retryAttempt.value = 0;
+    return;
+  }
+
+  const gen = loadGeneration;
+  const delay = Math.min(RETRY_BASE_MS * Math.pow(1.5, retryAttempt.value), RETRY_MAX_MS);
+  autoRetrying.value = true;
+  retryTimer = setTimeout(async () => {
+    if (gen !== loadGeneration) return;
+    retryAttempt.value++;
+    marketStore.historicalData = [];
+    await loadTimeframe(activeTimeframe());
+  }, delay);
+}
+
+const HORIZON_STYLE = {
+  '1d':  { color: '#58a6ff', label: '1 day' },
+  '5d':  { color: '#00d488', label: '5 days' },
+  '30d': { color: '#a855f7', label: '30 days' }
+};
 
 const chartError = computed(() => {
   if (!loading.value && marketStore.historicalData.length === 0) {
@@ -156,8 +226,96 @@ function buildChart() {
 
   sma20Series = chart.addLineSeries({ color: '#00d4ff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
   sma50Series = chart.addLineSeries({ color: '#a855f7', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  sma200Series = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+  forecastSeries = chart.addLineSeries({
+    color: '#00d4ff88', lineWidth: 2, lineStyle: 2,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: true
+  });
 
   chart.subscribeCrosshairMove(onCrosshair);
+}
+
+function clearPredictionOverlay() {
+  for (const pl of priceLines) {
+    try { candleSeries?.removePriceLine(pl); } catch { /* ignore */ }
+  }
+  priceLines = [];
+  forecastSeries?.setData([]);
+  predictionLegend.value = [];
+}
+
+function dateToUnix(dateStr) {
+  return Math.floor(Date.parse(dateStr + 'T00:00:00Z') / 1000);
+}
+
+function formatShortDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function applyPredictionOverlay(candles) {
+  clearPredictionOverlay();
+  if (!props.showPredictions || !candleSeries || !candles?.length) return;
+
+  const pred = predictionStore.currentPrediction;
+  if (!pred?.predictions?.length || pred.ticker !== (props.symbol || '').toUpperCase()) return;
+
+  const currentPrice = candles[candles.length - 1].close;
+  const lastTime = candles[candles.length - 1].time;
+  const forecastPoints = [{ time: lastTime, value: currentPrice }];
+  const markers = [];
+
+  for (const p of [...pred.predictions].sort((a, b) => {
+    const order = { '1d': 1, '5d': 2, '30d': 3 };
+    return (order[a.horizon] || 99) - (order[b.horizon] || 99);
+  })) {
+    const style = HORIZON_STYLE[p.horizon] || { color: '#8b949e', label: p.horizon };
+    const target = p.targetPrice;
+    if (!target) continue;
+
+    const textColor = p.prediction === 'UP' ? 'text-bull' : p.prediction === 'DOWN' ? 'text-bear' : 'text-neutral';
+    predictionLegend.value.push({
+      horizon: p.horizon,
+      label: style.label,
+      price: target.toFixed(2),
+      date: formatShortDate(p.targetDate),
+      color: style.color,
+      textColor
+    });
+
+    priceLines.push(candleSeries.createPriceLine({
+      price: target,
+      color: style.color,
+      lineWidth: 1,
+      lineStyle: 2,
+      axisLabelVisible: true,
+      title: `${style.label} $${target.toFixed(0)}`
+    }));
+
+    if (p.targetDate) {
+      const t = dateToUnix(p.targetDate);
+      if (t > lastTime) {
+        forecastPoints.push({ time: t, value: target });
+        markers.push({
+          time: t,
+          position: p.prediction === 'DOWN' ? 'aboveBar' : 'belowBar',
+          color: style.color,
+          shape: 'circle',
+          text: `${style.label} $${target.toFixed(0)}`
+        });
+      }
+    }
+  }
+
+  if (forecastPoints.length > 1) {
+    forecastPoints.sort((a, b) => a.time - b.time);
+    forecastSeries.setData(forecastPoints);
+  }
+  if (markers.length) {
+    candleSeries.setMarkers(markers);
+    chart.timeScale().applyOptions({ rightOffset: 15 });
+  }
 }
 
 function smaLine(candles, period) {
@@ -172,11 +330,23 @@ function smaLine(candles, period) {
   return out;
 }
 
+function activeTimeframe() {
+  return timeframes.find(t => t.label === activeTf.value) || timeframes[5];
+}
+
+function visibleCandles(raw) {
+  if (!raw?.length) return [];
+  const tf = activeTimeframe();
+  if (tf.interval === '1day') return raw.slice(-Math.min(tf.count, raw.length));
+  return raw;
+}
+
 function renderData() {
-  const raw = marketStore.historicalData;
+  const raw = visibleCandles(marketStore.historicalData);
   if (!chart || !candleSeries) return;
   if (!raw?.length) {
-    candleSeries.setData([]); volumeSeries.setData([]); sma20Series.setData([]); sma50Series.setData([]);
+    candleSeries.setData([]); volumeSeries.setData([]); sma20Series.setData([]); sma50Series.setData([]); sma200Series.setData([]);
+    clearPredictionOverlay();
     return;
   }
   const isIntraday = marketStore.chartInterval && marketStore.chartInterval !== '1day';
@@ -191,10 +361,15 @@ function renderData() {
   }
   candleSeries.setData(candles);
   volumeSeries.setData(volumes);
-  // SMA overlays only meaningful on daily timeframes
-  sma20Series.setData(isIntraday ? [] : smaLine(candles, 20));
-  sma50Series.setData(isIntraday ? [] : smaLine(candles, 50));
+  if (isIntraday) {
+    sma20Series.setData([]); sma50Series.setData([]); sma200Series.setData([]);
+  } else {
+    sma20Series.setData(smaLine(candles, 20));
+    sma50Series.setData(smaLine(candles, 50));
+    sma200Series.setData(candles.length >= 200 ? smaLine(candles, 200) : []);
+  }
   lastBar = candles.length ? { ...candles[candles.length - 1] } : null;
+  applyPredictionOverlay(candles);
   chart.timeScale().fitContent();
 }
 
@@ -208,10 +383,37 @@ function onCrosshair(param) {
   };
 }
 
-async function setTimeframe(tf) {
+async function loadTimeframe(tf) {
+  const sym = props.symbol || marketStore.selectedSymbol;
+  const prevInterval = marketStore.chartInterval;
   activeTf.value = tf.label;
-  marketStore.chartInterval = tf.interval;
-  await marketStore.fetchHistorical(marketStore.selectedSymbol, { days: tf.count, interval: tf.interval });
+
+  if (tf.interval === '1day') {
+    marketStore.chartInterval = '1day';
+    const fetchDays = tf.count >= 1260 ? DAILY_DEEP_DAYS : DAILY_INITIAL_DAYS;
+    const needFetch = prevInterval !== '1day' || marketStore.historicalData.length < tf.count;
+    if (needFetch) {
+      await marketStore.fetchHistorical(sym, { days: fetchDays, interval: '1day' });
+    } else {
+      renderData();
+    }
+  } else {
+    marketStore.chartInterval = tf.interval;
+    await marketStore.fetchHistorical(sym, { days: tf.count, interval: tf.interval });
+  }
+
+  scheduleAutoRetryIfNeeded();
+}
+
+async function setTimeframe(tf) {
+  await loadTimeframe(tf);
+}
+
+async function retryLoad() {
+  clearAutoRetry();
+  retryAttempt.value = 0;
+  marketStore.historicalData = [];
+  await loadTimeframe(activeTimeframe());
 }
 
 onMounted(() => {
@@ -223,13 +425,44 @@ onMounted(() => {
     }
   });
   ro.observe(chartContainer.value);
-  renderData();
 });
 
-onUnmounted(() => { ro?.disconnect(); chart?.remove(); chart = null; });
+watch(() => props.symbol, async (sym) => {
+  if (!sym) return;
+  loadGeneration++;
+  clearAutoRetry();
+  retryAttempt.value = 0;
+  await loadTimeframe(activeTimeframe());
+}, { immediate: true });
+
+onUnmounted(() => {
+  loadGeneration++;
+  clearAutoRetry();
+  clearPredictionOverlay();
+  ro?.disconnect();
+  chart?.remove();
+  chart = null;
+});
 
 // Re-render whenever the store's candle data changes (symbol switch, timeframe, refresh)
 watch(() => marketStore.historicalData, renderData, { deep: false });
+
+// Redraw targets when predictions arrive or update
+watch(
+  () => predictionStore.currentPrediction,
+  () => {
+    if (!chart || !marketStore.historicalData?.length) return;
+    const isIntraday = marketStore.chartInterval && marketStore.chartInterval !== '1day';
+    const candles = [];
+    for (const c of marketStore.historicalData) {
+      const base = isIntraday ? c.date.replace(' ', 'T') : c.date + 'T00:00:00';
+      const t = Math.floor(Date.parse(base + 'Z') / 1000);
+      candles.push({ time: t, close: c.close });
+    }
+    applyPredictionOverlay(candles);
+  },
+  { deep: true }
+);
 
 // Live: nudge the last candle on each streamed trade for the charted symbol
 watch(() => marketStore.liveTick, (tick) => {

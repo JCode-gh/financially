@@ -26,7 +26,8 @@ async function get(path, params = {}) {
 }
 
 export async function getTopFinancialNews() {
-  return cached('newsapi_top', 900_000, async () => {
+  // 30-min TTL keeps worst-case usage at ~48 of the 100 free requests/day
+  return cached('newsapi_top', 1800_000, async () => {
     const data = await get('/top-headlines', {
       category: 'business',
       pageSize: 30
@@ -47,9 +48,25 @@ export async function getTopFinancialNews() {
   });
 }
 
+const NON_FINANCIAL_SOURCES = /^(pypi|nature|seclists|plos|c-sharpcorner|github|reddit|stackoverflow|medium|dev\.to)/i;
+
+function looksFinancial(article, ticker, companyName) {
+  const text = `${article.title || ''} ${article.description || ''}`.toLowerCase();
+  const source = (article.source?.name || '').toLowerCase();
+  if (NON_FINANCIAL_SOURCES.test(source)) return false;
+
+  const sym = ticker.toLowerCase();
+  if (text.includes(sym)) return true;
+  if (companyName && text.includes(companyName.toLowerCase())) return true;
+
+  return /\b(stock|stocks|shares|earnings|revenue|market|investor|trading|ipo|dividend|quarter|analyst|price target|wall street|nasdaq|nyse)\b/i.test(text);
+}
+
 export async function searchStockNews(ticker, companyName) {
-  const q = companyName ? `${companyName} OR ${ticker} stock` : `${ticker} stock`;
-  return cached(`newsapi_${ticker}`, 600_000, async () => {
+  const sym = ticker.toUpperCase();
+  const namePart = companyName ? `"${companyName}" OR ` : '';
+  const q = `(${namePart}"${sym}") AND (stock OR shares OR earnings OR trading OR market OR investor)`;
+  return cached(`newsapi_${sym}`, 1800_000, async () => {
     const from = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
     const data = await get('/everything', {
       q,
@@ -60,6 +77,7 @@ export async function searchStockNews(ticker, companyName) {
     if (!data || !data.articles) return [];
     return data.articles
       .filter(a => a.title && !a.title.includes('[Removed]'))
+      .filter(a => looksFinancial(a, sym, companyName))
       .map(a => ({
         id: a.url,
         headline: a.title,
@@ -68,7 +86,7 @@ export async function searchStockNews(ticker, companyName) {
         url: a.url,
         image: a.urlToImage,
         publishedAt: a.publishedAt,
-        related: ticker
+        related: sym
       }));
   });
 }

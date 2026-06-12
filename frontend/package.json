@@ -10,6 +10,7 @@
   "dependencies": {
     "@vueuse/core": "^10.11.0",
     "axios": "^1.7.2",
+    "firebase": "^12.14.0",
     "lightweight-charts": "^4.2.3",
     "pinia": "^2.1.7",
     "vue": "^3.4.31",

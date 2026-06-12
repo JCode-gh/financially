@@ -32,8 +32,8 @@
       <span class="text-bear">▼{{ sentimentCounts.bearish }}</span>
     </div>
 
-    <!-- Mode tabs -->
-    <div class="flex border-b border-surface-300/50 flex-shrink-0">
+    <!-- Per-stock tab only when a stock is selected -->
+    <div v-if="hasStockTab" class="flex border-b border-surface-300/50 flex-shrink-0">
       <button
         @click="mode = 'market'"
         class="flex-1 py-1.5 text-xs font-mono transition-colors"
@@ -80,6 +80,14 @@ const activeFilter = computed(() => newsStore.activeFilter);
 const marketSentiment = computed(() => newsStore.marketSentiment);
 const sentimentCounts = computed(() => newsStore.sentimentCounts);
 const selectedSymbol = computed(() => marketStore.selectedSymbol);
+const hasStockTab = computed(() => isValidTicker(selectedSymbol.value));
+
+function isValidTicker(symbol) {
+  if (!symbol || typeof symbol !== 'string') return false;
+  const t = symbol.trim().toUpperCase();
+  if (!t || ['NULL', 'UNDEFINED', 'NONE'].includes(t)) return false;
+  return /^[A-Z0-9]{1,10}(\.[A-Z]{1,4})?$/.test(t);
+}
 
 const loading = computed(() =>
   mode.value === 'market' ? newsStore.loading.market : newsStore.loading.stock
@@ -115,14 +123,20 @@ const filters = [
 function setFilter(f) { newsStore.setFilter(f); }
 
 watch(selectedSymbol, async (sym) => {
+  if (!isValidTicker(sym)) {
+    mode.value = 'market';
+    return;
+  }
   if (mode.value === 'stock') {
     await newsStore.fetchStockNews(sym);
   }
 });
 
 watch(mode, async (m) => {
-  if (m === 'stock') {
+  if (m === 'stock' && isValidTicker(selectedSymbol.value)) {
     await newsStore.fetchStockNews(selectedSymbol.value);
+  } else if (m === 'stock') {
+    mode.value = 'market';
   }
 });
 </script>
