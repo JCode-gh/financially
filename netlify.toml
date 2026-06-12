@@ -1,0 +1,16 @@
+# Netlify must run Vite build — do NOT publish frontend/ source directly.
+# Raw index.html loads /src/main.js with bare "vue" imports, which browsers cannot resolve.
+
+[build]
+  base = "frontend"
+  command = "npm ci && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Vue Router history mode — all routes serve index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
