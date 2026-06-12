@@ -16,7 +16,16 @@ import { initLiveStream } from './services/liveStream.js';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: /^http:\/\/localhost:\d+$/ }));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (/^http:\/\/localhost:\d+$/.test(origin)) return callback(null, true);
+    if (/^https:\/\/([a-z0-9-]+\.)*jcode\.be$/i.test(origin)) return callback(null, true);
+    const extra = process.env.CORS_ORIGIN?.split(',').map(s => s.trim()).filter(Boolean) || [];
+    if (extra.includes(origin)) return callback(null, true);
+    callback(null, false);
+  }
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 

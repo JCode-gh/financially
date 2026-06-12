@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { stocksApi } from '../services/api.js';
+import { getWsUrl } from '../config/api.js';
 import { scheduleCloudSync, registerUserDataProvider } from '../services/userDataSync.js';
 
 const WATCHLISTS_KEY = 'financially_watchlists';
@@ -423,8 +424,9 @@ export const useMarketStore = defineStore('market', () => {
     if (typeof window === 'undefined') return;
     if (liveWs && (liveWs.readyState === 0 || liveWs.readyState === 1)) return;
     try {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      liveWs = new WebSocket(`${proto}//${location.host}/ws`);
+      const wsUrl = getWsUrl();
+      if (!wsUrl) return;
+      liveWs = new WebSocket(wsUrl);
       liveWs.onopen = () => { liveConnected.value = true; syncLive(); };
       liveWs.onmessage = (e) => {
         let d;
