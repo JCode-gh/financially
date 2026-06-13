@@ -3,7 +3,12 @@ import { getDB } from '../db/database.js';
 import { getStockNews } from '../services/finnhub.js';
 import { getRssStockNews } from '../services/rssNews.js';
 import { getHistoricalSeries } from '../services/historyProvider.js';
-import { generatePredictions, getModelWeights } from '../models/predictionEngine.js';
+import {
+  generatePredictions, getModelWeights, getHorizonWeights,
+  computeScore, buildTradePlanForDays, buildReasons, horizonTarget,
+  scoreToPrediction, PREDICTION_THRESHOLDS
+} from '../models/predictionEngine.js';
+import { analyzeArticles } from '../models/sentimentAnalyzer.js';
 import { evaluatePredictions, recalculateAccuracy } from '../jobs/predictionEvaluator.js';
 import { runBacktest, getBacktestResults } from '../jobs/backtester.js';
 import { getSymbolsReadyForScan } from '../jobs/historyWarmer.js';
@@ -141,6 +146,70 @@ router.post('/generate/:symbol', async (req, res) => {
 
     const result = await generatePredictions(ticker, candleData, articles);
     res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/trade-setup/:symbol', async (req, res) => {
+  const ticker = req.params.symbol.toUpperCase();
+  const maxDays = Math.min(31, Math.max(1, parseInt(req.body?.maxDays || 5, 10)));
+
+  try {
+    const [candlesResult, finnhubResult, rssResult] = await Promise.allSettled([
+      getHistoricalSeries(ticker, 500),
+      getStockNews(ticker),
+      getRssStockNews(ticker)
+    ]);
+
+    const candles = candlesResult.status === 'fulfilled' ? candlesResult.value : null;
+    if (!candles || candles.length < 30) {
+      return res.status(503).json({ success: false, error: `Insufficient historical data for ${ticker}` });
+    }
+
+    const seen = new Set();
+    const articles = [
+      ...(finnhubResult.status === 'fulfilled' && finnhubResult.value ? finnhubResult.value : []),
+      ...(rssResult.status === 'fulfilled' && rssResult.value ? rssResult.value : [])
+    ].filter(a => {
+      const key = (a.headline || '').toLowerCase().slice(0, 80);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const horizonWeights = getHorizonWeights();
+    const newsSentiment = analyzeArticles(articles, ticker);
+    const { score, indicators, signals, trend } = computeScore(candles, horizonWeights, newsSentiment.score);
+
+    const price = indicators.price;
+    const atr = indicators.atr || price * 0.02;
+    const t5 = PREDICTION_THRESHOLDS['5d'];
+    const direction = score >= t5.moderate ? 1 : score <= -t5.moderate ? -1 : 0;
+    const { confidence } = scoreToPrediction(score, '5d');
+
+    const tradePlan = direction !== 0
+      ? buildTradePlanForDays(direction, indicators, maxDays)
+      : null;
+
+    const reasons = buildReasons(indicators, signals, newsSentiment, direction);
+    const { expectedMovePct } = horizonTarget(maxDays, score, price, atr);
+
+    res.json({
+      success: true,
+      data: {
+        ticker, maxDays, direction: direction > 0 ? 'LONG' : direction < 0 ? 'SHORT' : 'NEUTRAL',
+        confidence: parseFloat(confidence.toFixed(3)),
+        expectedMovePct: parseFloat(expectedMovePct.toFixed(2)),
+        tradePlan,
+        reasons,
+        trend: { label: trend.label, direction: trend.direction },
+        support:    indicators.sr?.support?.price    ? parseFloat(indicators.sr.support.price.toFixed(2))    : null,
+        resistance: indicators.sr?.resistance?.price ? parseFloat(indicators.sr.resistance.price.toFixed(2)) : null,
+        atr: atr ? parseFloat(atr.toFixed(2)) : null,
+        price: parseFloat(price.toFixed(2))
+      }
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

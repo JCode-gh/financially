@@ -15,7 +15,7 @@ const PREDICTION_THRESHOLDS = {
 };
 
 // ATR-scaled expected move + price target for a horizon (in trading days).
-function horizonTarget(days, score, price, atr) {
+export function horizonTarget(days, score, price, atr) {
   const dir = score >= 0 ? 1 : -1;
   const conviction = Math.min(1, Math.abs(score));
   const atrPct = atr / price;
@@ -26,6 +26,70 @@ function horizonTarget(days, score, price, atr) {
     targetPrice: price * (1 + expectedMove),
     low: price * (1 + expectedMove - band),
     high: price * (1 + expectedMove + band)
+  };
+}
+
+// ATR stop/target multipliers that grow with the intended hold time so the
+// plan doesn't get stopped out by normal intraday noise on longer trades.
+function atrMultsForDays(maxDays) {
+  if (maxDays <= 2)  return { stop: 1.0, target: 1.5 }; // day / scalp
+  if (maxDays <= 5)  return { stop: 1.4, target: 2.1 }; // short swing
+  if (maxDays <= 10) return { stop: 1.8, target: 2.7 }; // medium swing
+  if (maxDays <= 20) return { stop: 2.2, target: 3.3 }; // swing
+  return              { stop: 2.8, target: 4.2 };        // position
+}
+
+// Variant of buildTradePlan that scales stops/targets for a user-chosen hold window.
+export function buildTradePlanForDays(direction, indicators, maxDays) {
+  const price = indicators.price;
+  const atr = indicators.atr || price * 0.02;
+  const { sr } = indicators;
+  if (!direction || !price) return null;
+
+  const { stop: sM, target: tM } = atrMultsForDays(maxDays);
+  let entry = price, stop, target, stopBasis = 'ATR', targetBasis = 'ATR';
+
+  if (direction > 0) {
+    stop = price - sM * atr;
+    if (sr?.support && price - sr.support.price < sM * 1.5 * atr && sr.support.price < price) {
+      stop = Math.min(stop, sr.support.price * 0.99);
+      stopBasis = `support $${sr.support.price.toFixed(2)}`;
+    }
+    target = price + tM * atr;
+    if (sr?.resistance && sr.resistance.price - price < tM * 1.5 * atr && sr.resistance.price > price * 1.01) {
+      target = sr.resistance.price * 0.998;
+      targetBasis = `resistance $${sr.resistance.price.toFixed(2)}`;
+    }
+  } else {
+    stop = price + sM * atr;
+    if (sr?.resistance && sr.resistance.price - price < sM * 1.5 * atr && sr.resistance.price > price) {
+      stop = Math.max(stop, sr.resistance.price * 1.01);
+      stopBasis = `resistance $${sr.resistance.price.toFixed(2)}`;
+    }
+    target = price - tM * atr;
+    if (sr?.support && price - sr.support.price < tM * 1.5 * atr && sr.support.price < price * 0.99) {
+      target = sr.support.price * 1.002;
+      targetBasis = `support $${sr.support.price.toFixed(2)}`;
+    }
+  }
+
+  const risk   = Math.abs(entry - stop);
+  const reward = Math.abs(target - entry);
+  const rr     = risk > 0 ? reward / risk : 0;
+  const riskPct = (risk / entry) * 100;
+  const positionPct = riskPct > 0 ? Math.min(25, Math.round(100 / riskPct)) : 0;
+
+  return {
+    direction:   direction > 0 ? 'LONG' : 'SHORT',
+    entry:       parseFloat(entry.toFixed(2)),
+    stop:        parseFloat(stop.toFixed(2)),
+    target:      parseFloat(target.toFixed(2)),
+    rr:          parseFloat(rr.toFixed(2)),
+    riskPct:     parseFloat(riskPct.toFixed(2)),
+    positionPct,
+    stopBasis,
+    targetBasis,
+    maxDays
   };
 }
 

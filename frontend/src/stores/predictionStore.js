@@ -6,7 +6,8 @@ export const usePredictionStore = defineStore('predictions', () => {
   const accuracy = ref(null);
   const currentPrediction = ref(null);
   const predictionHistory = ref([]);
-  const loading = ref({ accuracy: false, generating: false, history: false });
+  const tradeSetup = ref(null);
+  const loading = ref({ accuracy: false, generating: false, history: false, tradeSetup: false });
   const generating = ref(false);
 
   const overallAccuracy = computed(() => {
@@ -77,9 +78,23 @@ export const usePredictionStore = defineStore('predictions', () => {
     finally { loading.value.history = false; }
   }
 
+  async function generateTradeSetup(symbol, maxDays) {
+    loading.value.tradeSetup = true;
+    tradeSetup.value = null;
+    try {
+      const res = await predictionsApi.tradeSetup(symbol, maxDays);
+      tradeSetup.value = res.data.data;
+      return res.data.data;
+    } catch (e) {
+      throw e;
+    } finally {
+      loading.value.tradeSetup = false;
+    }
+  }
+
   return {
-    accuracy, currentPrediction, predictionHistory, loading, generating,
+    accuracy, currentPrediction, predictionHistory, tradeSetup, loading, generating,
     overallAccuracy, modelHealth,
-    fetchAccuracy, generateForSymbol, fetchForSymbol, fetchHistory
+    fetchAccuracy, generateForSymbol, fetchForSymbol, fetchHistory, generateTradeSetup
   };
 });

@@ -33,6 +33,7 @@ export const predictionsApi = {
   history: (params) => http.get('/predictions/history', { params }),
   forSymbol: (symbol) => http.get(`/predictions/${symPath(symbol)}`),
   generate: (symbol) => http.post(`/predictions/generate/${symPath(symbol)}`),
+  tradeSetup: (symbol, maxDays) => http.post(`/predictions/trade-setup/${symPath(symbol)}`, { maxDays }),
   evaluate: () => http.post('/predictions/evaluate'),
   backtest: () => http.post('/predictions/backtest')
 };
