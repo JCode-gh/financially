@@ -15,6 +15,15 @@ function isValidTicker(ticker) {
   return /^[A-Z0-9]{1,10}(\.[A-Z]{1,4})?$/.test(t);
 }
 
+// Keep only articles that mention stock/market concepts.
+// Filters out general business, politics, lifestyle, etc. from broad sources.
+const STOCK_SIGNAL = /\b(stock|stocks|share|shares|equity|equities|earnings|revenue|EPS|quarterly|dividend|dividends|IPO|buyback|merger|acquisition|valuation|portfolio|hedge fund|futures|options|market cap|index fund|ETF|mutual fund|short sell|analyst|analysts|Wall Street|NYSE|Nasdaq|S&P 500|Dow Jones|FTSE|rally|selloff|sell-off|correction|bull market|bear market|Federal Reserve|interest rate|yield curve|bond yield|treasury|central bank|forecast|guidance|outlook|price target|upgrade|downgrade|overweight|underweight|buy rating|hold rating|sell rating)\b/i;
+
+function isStockRelated(article) {
+  const text = `${article.headline || ''} ${article.summary || ''}`;
+  return STOCK_SIGNAL.test(text);
+}
+
 function dedupeAndSort(articles) {
   const seen = new Set();
   return articles
@@ -39,7 +48,7 @@ router.get('/market', async (req, res) => {
       ...(finnhubNews.status === 'fulfilled' ? finnhubNews.value : []),
       ...(rssNews.status === 'fulfilled' ? rssNews.value : []),
       ...(newsApiNews.status === 'fulfilled' ? newsApiNews.value : [])
-    ]).slice(0, 60);
+    ].filter(isStockRelated)).slice(0, 60);
 
     const { articles: analyzed, score, label } = analyzeArticles(articles);
     res.json({ success: true, data: analyzed, marketSentiment: { score, label }, count: analyzed.length });
