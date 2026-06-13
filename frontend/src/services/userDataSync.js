@@ -1,4 +1,4 @@
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore/lite';
 import { auth, db, firebaseEnabled } from '../firebase.js';
 
 const SYNC_DEBOUNCE_MS = 800;
