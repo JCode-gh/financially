@@ -43,7 +43,7 @@ function parseSeries(data) {
 // (rate-limited) and Alpha Vantage (free tier caps at ~100 days) cannot serve.
 export async function getHistorical(symbol, days = 100) {
   if (!KEY) return null;
-  // Twelve Data rarely lists EU exchange tickers — skip to preserve quota.
+  // Twelve Data free tier only covers US symbols; EU exchange suffixes return 404
   if (/\.[A-Z]{1,4}$/.test(symbol)) return null;
   // Cache the full fetched series (unsliced) and slice per request so each timeframe
   // gets its own window from one upstream call.

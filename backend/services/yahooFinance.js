@@ -22,10 +22,14 @@ const http = axios.create({ timeout: 12000 });
 let session = { cookie: '', crumb: '', ts: 0 };
 const SESSION_TTL = 60 * 60 * 1000; // 1 hour
 
-// Global backoff: when Yahoo rate-limits us (429), stop hitting it for a while
-// so the IP-level throttle can clear instead of being re-triggered on every call.
+// Global backoff for v7 session endpoints (429 → 5 min cooldown).
 let backoffUntil = 0;
 const BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+
+// Separate backoff for the v8 chart API — its rate limit is independent of v7.
+// Keeping these separate means a v7 429 never silently kills chart fetches.
+let chartBackoffUntil = 0;
+const CHART_BACKOFF_MS = 2 * 60 * 1000; // 2 minutes
 
 function yahooBlocked() {
   return Date.now() < backoffUntil;
@@ -218,14 +222,23 @@ async function getChartJson(symbol, params) {
     const data = await curlChartJson(chartUrl(base, symbol, params));
     if (data?.chart?.result?.[0]) return data;
   }
-  // Railway/containers often lack curl — fall back to axios
+  // Containers often lack curl (Railway/Nixpacks). Fall back to direct http.get —
+  // NOT yget — so a v7 session backoff never silently blocks v8 chart requests.
+  if (Date.now() < chartBackoffUntil) return null;
   for (const base of [BASE1, BASE2]) {
     try {
-      const res = await yget(chartUrl(base, symbol, params), {
-        headers: { 'User-Agent': UA, Accept: '*/*', Referer: 'https://finance.yahoo.com/' }
+      const res = await http.get(chartUrl(base, symbol, params), {
+        headers: { 'User-Agent': UA, Accept: '*/*', Referer: 'https://finance.yahoo.com/' },
+        timeout: 8000
       });
       if (res.data?.chart?.result?.[0]) return res.data;
-    } catch { /* try next base */ }
+    } catch (e) {
+      const status = e?.response?.status;
+      if (status === 429 || status === 999) {
+        chartBackoffUntil = Date.now() + CHART_BACKOFF_MS;
+        break; // no point trying the other base if we're already rate-limited
+      }
+    }
   }
   return null;
 }
