@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore } from 'firebase/firestore';
 
 export const firebaseEnabled = Boolean(import.meta.env.VITE_FIREBASE_API_KEY);
 
@@ -18,7 +18,9 @@ if (firebaseEnabled) {
     appId: import.meta.env.VITE_FIREBASE_APP_ID
   });
   auth = getAuth(app);
-  db = getFirestore(app);
+  // experimentalForceLongPolling avoids Safari's CORS block on the bidirectional
+  // streaming channel (Listen/channel) that getFirestore opens by default.
+  db = initializeFirestore(app, { experimentalForceLongPolling: true });
 }
 
 export { app, auth, db };
