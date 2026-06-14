@@ -67,9 +67,9 @@ const verdict = computed(() => {
   const s = styles[action];
 
   const headlines = {
-    buy: `We think ${props.symbol} is likely to go up over the next few weeks.`,
-    sell: `We think ${props.symbol} is likely to go down over the next few weeks.`,
-    hold: `No strong signal right now — best to wait and watch ${props.symbol}.`
+    buy: `${props.symbol} leans up — the technical signals tilt bullish, but the edge is slight.`,
+    sell: `${props.symbol} leans down — the technical signals tilt bearish, but the edge is slight.`,
+    hold: `No clear edge right now — signals are mixed, so the honest call is to wait and watch ${props.symbol}.`
   };
 
   const detail = pred.reasons?.[0] || null;

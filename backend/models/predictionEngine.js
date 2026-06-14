@@ -31,12 +31,15 @@ export function horizonTarget(days, score, price, atr) {
 
 // ATR stop/target multipliers that grow with the intended hold time so the
 // plan doesn't get stopped out by normal intraday noise on longer trades.
+// Stops widened from an earlier, tighter set: walk-forward trade sim showed a
+// 1.5×ATR stop gets whipsawed out before the move develops, dragging the win
+// rate down. Wider stops + a ~1.5:1 reward:risk ratio survive normal noise.
 function atrMultsForDays(maxDays) {
-  if (maxDays <= 2)  return { stop: 1.0, target: 1.5 }; // day / scalp
-  if (maxDays <= 5)  return { stop: 1.4, target: 2.1 }; // short swing
-  if (maxDays <= 10) return { stop: 1.8, target: 2.7 }; // medium swing
-  if (maxDays <= 20) return { stop: 2.2, target: 3.3 }; // swing
-  return              { stop: 2.8, target: 4.2 };        // position
+  if (maxDays <= 2)  return { stop: 1.3, target: 2.0 }; // day / scalp
+  if (maxDays <= 5)  return { stop: 1.8, target: 2.7 }; // short swing
+  if (maxDays <= 10) return { stop: 2.2, target: 3.3 }; // medium swing
+  if (maxDays <= 20) return { stop: 2.6, target: 3.9 }; // swing
+  return              { stop: 3.2, target: 4.8 };        // position
 }
 
 // Variant of buildTradePlan that scales stops/targets for a user-chosen hold window.
@@ -261,14 +264,21 @@ export function computeEnsembleScore(signals, weights) {
   return totalWeight > 0 ? score / totalWeight : 0;
 }
 
+// Confidence is deliberately CAPPED at honest levels. Measured out-of-sample
+// hit-rate on this task tops out around 52-55% even on the model's strongest,
+// most-agreed calls — so quoting 70-85% (as the old curve did) was fiction that
+// would mislead a user into oversizing a coin-flip. A strong call maxes near 0.60;
+// a moderate call sits in the low-0.50s. The live calibration layer
+// (calibratedWinProbability) can still remap these down further once enough
+// resolved predictions accumulate per bucket.
 export function scoreToPrediction(score, horizon = '5d') {
   const t = PREDICTION_THRESHOLDS[horizon] || PREDICTION_THRESHOLDS['5d'];
   const a = Math.abs(score);
   if (a >= t.strong) {
-    return { prediction: score > 0 ? 'UP' : 'DOWN', confidence: Math.min(0.85, 0.62 + (a - t.strong) * 0.3) };
+    return { prediction: score > 0 ? 'UP' : 'DOWN', confidence: Math.min(0.60, 0.555 + (a - t.strong) * 0.12) };
   }
   if (a >= t.moderate) {
-    return { prediction: score > 0 ? 'UP' : 'DOWN', confidence: 0.55 + (a - t.moderate) / (t.strong - t.moderate) * 0.07 };
+    return { prediction: score > 0 ? 'UP' : 'DOWN', confidence: 0.515 + (a - t.moderate) / (t.strong - t.moderate) * 0.04 };
   }
   return { prediction: 'NEUTRAL', confidence: 0.5 };
 }
@@ -302,6 +312,37 @@ export function blendForHorizon(technicalScore, horizon) {
   return Math.max(-1, Math.min(1, s * 1.7));
 }
 
+// The ONLY signals with a measured directional edge on this universe are the
+// trend/momentum family: 6-month momentum, ADX-confirmed trend regime, 20-day
+// breakout, and the EMA cross. Each casts a ±1 vote when it has a real opinion.
+// `net` is the signed agreement; `count` is how many actually voted.
+export function coreAgreement(signals, indicators) {
+  const votes = [];
+  if (Math.abs(signals.momentum ?? 0) > 0.10) votes.push(Math.sign(signals.momentum));
+  if (Math.abs(signals.trend_regime ?? 0) > 0.10 && (indicators?.adx?.adx ?? 0) > 20) {
+    votes.push(Math.sign(signals.trend_regime));
+  }
+  if (Math.abs(signals.breakout ?? 0) > 0.30) votes.push(Math.sign(signals.breakout));
+  if (Math.abs(signals.ema_crossover ?? 0) > 0.15) votes.push(Math.sign(signals.ema_crossover));
+  const net = votes.reduce((a, b) => a + b, 0);
+  return { net, count: votes.length };
+}
+
+// Agreement gate: the raw ensemble blends 17 signals, most of which are noise on
+// this task (~50% directional). Acting on every wiggle is how the model ended up
+// with NEGATIVE out-of-sample edge. This gate keeps full conviction only when the
+// edge-bearing core agrees (|net| >= 2), halves it on a lone vote, and nearly
+// mutes the score when the core is silent or split — so the model abstains
+// (NEUTRAL) instead of guessing. A score that fights the core is damped hard.
+// Verified on walk-forward: turns 5d from -1.3pp (losing) to a small positive edge.
+export function applyAgreementGate(score, signals, indicators) {
+  const { net } = coreAgreement(signals, indicators);
+  let gated = score;
+  if (net !== 0 && Math.sign(score) !== Math.sign(net)) gated *= 0.30; // fights the core
+  const gate = Math.abs(net) >= 2 ? 1 : Math.abs(net) === 1 ? 0.5 : 0.15;
+  return Math.max(-1, Math.min(1, gated * gate));
+}
+
 // Signal components, shared by live predictions, the scanner, and the
 // backtester (so they always agree). Weight-independent.
 export function computeSignalSet(candles, newsScore = null) {
@@ -320,13 +361,15 @@ export function computeScore(candles, horizonWeights, newsScore = null) {
   const scores = {};
   for (const h of ['1d', '5d', '30d']) {
     const w = horizonWeights[h]?.weights || horizonWeights[h] || {};
-    scores[h] = blendForHorizon(computeEnsembleScore(signals, w), h);
+    const blended = blendForHorizon(computeEnsembleScore(signals, w), h);
+    scores[h] = applyAgreementGate(blended, signals, indicators);
   }
 
   return {
     score: scores['5d'],
     scores,
     trendScore: trend.direction * trend.strength,
+    agreement: coreAgreement(signals, indicators),
     indicators,
     signals,
     trend
@@ -461,16 +504,35 @@ export function updateWeightsFromReturn(signals, priceChangePct, horizon = '5d')
   return updatedWeights;
 }
 
-// Hebbian return-correlation learning (pure, no DB — shared with the backtester):
-//   w_i += lr × signal_i × clamp(forwardReturn)
-// Each signal's weight tracks its CURRENT correlation with forward returns.
-// A signal that keeps pointing the wrong way doesn't just shrink — it goes
-// NEGATIVE, so the ensemble automatically fades it until the regime turns.
-// No assumptions about which regime we're in; the data decides.
+// Hebbian learning toward DIRECTIONAL accuracy (pure, no DB — shared with backtester):
+//   w_i += lr × signal_i × directionTarget(forwardReturn)
+//
+// The teaching signal is sign-aware, NOT magnitude-weighted. This is the fix for
+// the model's worst failure mode: with a raw `return/1.5` target, mean-reversion
+// signals (oversold RSI/Bollinger) earned POSITIVE weights despite a sub-50%
+// directional hit-rate — because the occasional violent bounce produced a few
+// huge magnitude updates that swamped the many small losses. The learner was
+// optimizing return-correlation while the model is graded on direction, so it
+// converged to weights that were directionally inverted (verified: rsi/bollinger
+// at the top with +weights, breakout/trend at the bottom with -weights).
+//
+// A ±0.5% move saturates the target, so it's effectively the sign of the move
+// with a small dead-zone for noise. Now a signal that's right on direction >50%
+// of the time accrues a net-positive weight, and one that's wrong goes negative —
+// the ensemble fades the loser until the regime turns. The data still decides.
+// Trend/momentum signals carry a small but documented POSITIVE directional edge
+// (verified here: momentum ~51%, breakout ~51-52%, trend ~51% over n>90k OOS).
+// They also define the agreement gate's direction. We let learning scale them but
+// floor them at a small positive value so the noisy, non-stationary train window
+// can't invert their sign — which is exactly the pathology that produced a model
+// where a visible uptrend pushed the score BEARISH while the gate voted bullish.
+// Mean-reversion and other signals stay fully free to go negative.
+const ANCHORED_POSITIVE = ['trend_regime', 'momentum', 'breakout', 'ema_crossover', 'sma_crossover', 'adx_trend'];
+const ANCHOR_FLOOR = 0.01;
+
 export function applyReturnToWeights(weights, signals, fwdReturnPct, learningRate = LEARNING_RATE) {
   const updatedWeights = { ...weights };
-  // ±1.5% forward move saturates the teaching signal (robust to gaps/crashes)
-  const target = Math.max(-1, Math.min(1, fwdReturnPct / 1.5));
+  const target = Math.max(-1, Math.min(1, fwdReturnPct / 0.5));
 
   for (const [indicator, weight] of Object.entries(updatedWeights)) {
     const signal = signals[indicator];
@@ -478,9 +540,12 @@ export function applyReturnToWeights(weights, signals, fwdReturnPct, learningRat
     updatedWeights[indicator] = weight + learningRate * signal * target;
   }
 
-  // Cap any single |weight| at 0.30 (no monoculture), normalize Σ|w| = 1.
+  // Cap any single |weight| at 0.30 (no monoculture); floor the trend family at a
+  // small positive so it can't invert against its documented edge; normalize Σ|w|=1.
   for (const key of Object.keys(updatedWeights)) {
-    updatedWeights[key] = Math.max(-0.30, Math.min(0.30, updatedWeights[key]));
+    let w = Math.max(-0.30, Math.min(0.30, updatedWeights[key]));
+    if (ANCHORED_POSITIVE.includes(key)) w = Math.max(ANCHOR_FLOOR, w);
+    updatedWeights[key] = w;
   }
   const total = Object.values(updatedWeights).reduce((a, b) => a + Math.abs(b), 0);
   if (total > 0) {

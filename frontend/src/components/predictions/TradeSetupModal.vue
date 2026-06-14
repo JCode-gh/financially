@@ -142,6 +142,17 @@
                   </li>
                 </ul>
               </div>
+
+              <!-- Honest edge disclaimer -->
+              <div class="mt-4 flex gap-2 items-start text-xs text-gray-500 bg-surface-200/60 rounded-lg px-3 py-2.5 leading-relaxed">
+                <svg class="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-gray-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <span>
+                  Short-term direction on liquid stocks is close to a coin flip — these signals are only
+                  ~52–55% accurate out-of-sample. Treat this as a risk-defined plan, not a prediction, and size small.
+                </span>
+              </div>
             </template>
 
           </div>

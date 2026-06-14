@@ -4,7 +4,7 @@ import { getDB, LIVE_ONLY_WEIGHT_KEYS } from '../db/database.js';
 import { getHistoricalSeries } from '../services/historyProvider.js';
 import {
   getModelWeights, saveModelWeights, computeSignalSet, computeEnsembleScore,
-  blendForHorizon, applyReturnToWeights, PREDICTION_THRESHOLDS, buildTradePlan
+  blendForHorizon, applyAgreementGate, applyReturnToWeights, PREDICTION_THRESHOLDS, buildTradePlan
 } from '../models/predictionEngine.js';
 import {
   DEFAULT_COST_BPS, tradeReturnPct, tradeRMultiple, aggregateTradeMetrics
@@ -69,7 +69,10 @@ export async function runBacktest(symbols, { log = true, costBps = DEFAULT_COST_
         const future = candles[i + h.days];
         if (!future) continue;
 
-        const hScore = blendForHorizon(computeEnsembleScore(signals, weights[h.id]), h.id);
+        const hScore = applyAgreementGate(
+          blendForHorizon(computeEnsembleScore(signals, weights[h.id]), h.id),
+          signals, indicators
+        );
         const actualUp = future.close > priceNow;
         const threshold = (PREDICTION_THRESHOLDS[h.id] || PREDICTION_THRESHOLDS['5d']).moderate;
         const strongThreshold = (PREDICTION_THRESHOLDS[h.id] || PREDICTION_THRESHOLDS['5d']).strong;
