@@ -1,0 +1,3 @@
+# Yahoo's chart API 429s Node.js HTTP clients from datacenter IPs; shell curl is reliable.
+[phases.setup]
+aptPkgs = ["curl"]

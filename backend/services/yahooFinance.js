@@ -165,9 +165,22 @@ async function fetchIntlQuotes(symbols) {
     if (cached) results.push(cached);
     else needLive.push(sym);
   }
+  // #region agent log
+  fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:fetchIntlQuotes',message:'intl quote split',data:{symbols,cached:results.map(q=>q.symbol),needLive},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+  // #endregion
   if (needLive.length) {
     const live = await pLimit(needLive.map(sym => () => quoteViaChart(sym)), 6, 150);
+    const got = new Set(live.filter(Boolean).map(q => q.symbol));
     results.push(...live.filter(Boolean));
+    // Stale disk beats a 503 when Yahoo rate-limits datacenter IPs (e.g. Railway).
+    for (const sym of needLive) {
+      if (got.has(sym)) continue;
+      const stale = quoteFromDisk(sym);
+      if (stale) results.push(stale);
+    }
+    // #region agent log
+    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:fetchIntlQuotes:live',message:'chart live results',data:{needLive,got:[...got],missed:needLive.filter(s=>!got.has(s)&&!results.find(q=>q.symbol===s)),staleFallback:results.filter(q=>q.stale).map(q=>q.symbol)},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
+    // #endregion
   }
   return results;
 }
@@ -204,35 +217,63 @@ const CURL_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537
 // Yahoo often 429s Node.js HTTP clients; shell curl works reliably on macOS/Linux.
 async function curlChartJson(url) {
   if (!/^https:\/\/query[12]\.finance\.yahoo\.com\//.test(url)) return null;
-  try {
-    const { stdout } = await execAsync(
-      `curl -s -L --max-time 30 -H 'User-Agent: ${CURL_UA}' -H 'Referer: https://finance.yahoo.com/' ${shellQuote(url)}`,
-      { maxBuffer: 12 * 1024 * 1024 }
-    );
-    const text = stdout?.trim();
-    if (!text || text.startsWith('Too Many')) return null;
-    return JSON.parse(text);
-  } catch {
-    return null;
+  const curlBins = ['curl', '/usr/bin/curl', '/nix/var/nix/profiles/default/bin/curl'];
+  for (const bin of curlBins) {
+    try {
+      const { stdout } = await execAsync(
+        `${bin} -s -L --max-time 30 -H 'User-Agent: ${CURL_UA}' -H 'Referer: https://finance.yahoo.com/' ${shellQuote(url)}`,
+        { maxBuffer: 12 * 1024 * 1024 }
+      );
+      const text = stdout?.trim();
+      if (!text || text.startsWith('Too Many')) continue;
+      const data = JSON.parse(text);
+      if (data?.chart?.result?.[0]) return data;
+    } catch { /* try next curl path */ }
   }
+  return null;
 }
 
 async function getChartJson(symbol, params) {
+  if (process.env.DEBUG_SIMULATE_CHART_FAIL === '1') {
+    // #region agent log
+    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:simulate',message:'chart fetch simulated fail',data:{symbol},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    return null;
+  }
+  let curlOk = false;
+  let curlErr = null;
   for (const base of [BASE1, BASE2]) {
     const data = await curlChartJson(chartUrl(base, symbol, params));
-    if (data?.chart?.result?.[0]) return data;
+    if (data?.chart?.result?.[0]) {
+      curlOk = true;
+      // #region agent log
+      fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:curl',message:'chart via curl ok',data:{symbol,base},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      return data;
+    }
   }
   // Containers often lack curl (Railway/Nixpacks). Fall back to direct http.get —
   // NOT yget — so a v7 session backoff never silently blocks v8 chart requests.
-  if (Date.now() < chartBackoffUntil) return null;
+  if (Date.now() < chartBackoffUntil) {
+    // #region agent log
+    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:backoff',message:'chart backoff active',data:{symbol,chartBackoffUntil},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
+    return null;
+  }
   for (const base of [BASE1, BASE2]) {
     try {
       const res = await http.get(chartUrl(base, symbol, params), {
         headers: { 'User-Agent': UA, Accept: '*/*', Referer: 'https://finance.yahoo.com/' },
         timeout: 8000
       });
-      if (res.data?.chart?.result?.[0]) return res.data;
+      if (res.data?.chart?.result?.[0]) {
+        // #region agent log
+        fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:axios',message:'chart via axios ok',data:{symbol,base},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+        return res.data;
+      }
     } catch (e) {
+      curlErr = e?.response?.status || e?.code || e?.message;
       const status = e?.response?.status;
       if (status === 429 || status === 999) {
         chartBackoffUntil = Date.now() + CHART_BACKOFF_MS;
@@ -240,6 +281,9 @@ async function getChartJson(symbol, params) {
       }
     }
   }
+  // #region agent log
+  fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:fail',message:'chart fetch failed',data:{symbol,curlOk,axiosErr:curlErr,chartBackoffUntil},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
+  // #endregion
   return null;
 }
 
@@ -332,7 +376,14 @@ function isInternationalTicker(symbol) {
 async function quoteViaChart(symbol) {
   const data = await getChartJson(symbol, { range: '5d', interval: '1d', includePrePost: false });
   const result = data?.chart?.result?.[0];
-  if (result?.meta?.regularMarketPrice != null) return fromChartMeta(result.meta, null, null);
+  if (result?.meta?.regularMarketPrice != null) {
+    const quote = fromChartMeta(result.meta, null, null);
+    // Warm disk cache in background so the next request survives rate limits.
+    import('../services/historyProvider.js')
+      .then(({ getHistoricalSeries }) => getHistoricalSeries(symbol, 60, 0).catch(() => {}))
+      .catch(() => {});
+    return quote;
+  }
   return null;
 }
 
@@ -379,12 +430,16 @@ export async function getQuote(symbol) {
       if (disk) return disk;
       const intl = await quoteViaChart(symbol);
       if (intl) return intl;
+      const stale = quoteFromDisk(symbol);
+      if (stale) return stale;
     }
 
     const bulk = await quoteBulk([symbol]);
     if (bulk?.[0]) return fromV7Quote(bulk[0]);
 
-    return quoteViaChart(symbol);
+    const chart = await quoteViaChart(symbol);
+    if (chart) return chart;
+    return quoteFromDisk(symbol);
   });
 }
 

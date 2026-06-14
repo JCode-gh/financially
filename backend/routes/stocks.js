@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getMarketOverview, getQuote, getMultipleQuotes, searchSymbols as searchYahoo } from '../services/yahooFinance.js';
 import { getFinnhubQuote, getMarketOverview as getFinnhubMarketOverview, searchSymbols as searchFinnhub } from '../services/finnhub.js';
 import { getQuote as getAvQuote } from '../services/alphaVantage.js';
-import { getHistoricalSeries, quoteFromDisk } from '../services/historyProvider.js';
+import { getHistoricalSeries, quoteFromDisk as historyQuoteFromDisk } from '../services/historyProvider.js';
 import { getIntraday } from '../services/twelveData.js';
 import { enrichSearchResult, pickBestSearchMatch, rankSearchResult } from '../services/symbolFormat.js';
 
@@ -11,9 +11,12 @@ const INTRADAY_INTERVALS = new Set(['1min', '5min', '15min', '30min', '45min', '
 const router = Router();
 
 async function quoteFromHistory(symbol) {
-  const fromDisk = quoteFromDisk(symbol);
+  const fromDisk = historyQuoteFromDisk(symbol);
   if (fromDisk) return fromDisk;
   const hist = await getHistoricalSeries(symbol, 5, 7 * 24 * 3600_000).catch(() => null);
+  // #region agent log
+  fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:quoteFromHistory',message:'history fallback',data:{symbol,fromDisk:!!fromDisk,histLen:hist?.length||0},timestamp:Date.now(),hypothesisId:'B,C'})}).catch(()=>{});
+  // #endregion
   if (!hist?.length) return null;
   const last = hist[hist.length - 1];
   const prev = hist.length > 1 ? hist[hist.length - 2] : last;
@@ -38,6 +41,9 @@ router.get('/watchlist', async (req, res) => {
   if (!symbols.length) return res.json({ success: true, data: [] });
   try {
     let data = await getMultipleQuotes(symbols);
+    // #region agent log
+    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:multi',message:'getMultipleQuotes result',data:{symbols,count:data?.length||0,returned:data?.map(q=>q.symbol)||[]},timestamp:Date.now(),hypothesisId:'A,B'})}).catch(()=>{});
+    // #endregion
 
     // Fill any symbols Yahoo missed (rate limits, etc.)
     const have = new Set((data || []).map(q => q.symbol));
@@ -46,15 +52,25 @@ router.get('/watchlist', async (req, res) => {
       const extras = await Promise.all(
         missing.map(async sym => {
           const q = await getQuote(sym).catch(() => null);
-          return q || quoteFromHistory(sym);
+          const hist = q ? null : await quoteFromHistory(sym);
+          // #region agent log
+          fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:fallback',message:'per-symbol fallback',data:{sym,fromGetQuote:!!q,fromHistory:!!hist,stale:q?.stale||hist?.stale||false},timestamp:Date.now(),hypothesisId:'B,C'})}).catch(()=>{});
+          // #endregion
+          return q || hist;
         })
       );
       data = [...(data || []), ...extras.filter(Boolean)];
     }
 
+    // #region agent log
+    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:final',message:'watchlist response',data:{symbols,finalCount:data?.length||0,ok:!!data?.length},timestamp:Date.now(),hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
+    // #endregion
     if (data?.length) return res.json({ success: true, data });
     return res.status(503).json({ success: false, error: 'Quote data unavailable' });
-  } catch {
+  } catch (err) {
+    // #region agent log
+    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:catch',message:'watchlist threw',data:{symbols,error:err?.message||String(err)},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+    // #endregion
     return res.status(503).json({ success: false, error: 'Quote data unavailable' });
   }
 });
