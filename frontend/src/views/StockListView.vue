@@ -65,6 +65,7 @@
         </div>
         <button @click="addSymbol" class="px-4 py-2 text-sm text-accent font-mono hover:text-accent/70 flex-shrink-0">Add</button>
       </div>
+      <p v-if="addError" class="text-xs text-neutral mt-1.5 font-mono">{{ addError }}</p>
     </div>
 
     <div class="flex-1 overflow-y-auto panel-scroll">
@@ -157,6 +158,7 @@ const showAdd = ref(false);
 const viewMode = ref(loadViewMode());
 const newSymbol = ref('');
 const addSearchResults = ref([]);
+const addError = ref('');
 const backendDown = ref(false);
 let refreshInterval;
 let addSearchTimer;
@@ -189,6 +191,7 @@ watch(() => authStore.syncing, (syncing, wasSyncing) => {
 
 function onAddSearch() {
   clearTimeout(addSearchTimer);
+  addError.value = '';
   addSearchTimer = setTimeout(async () => {
     const q = newSymbol.value.trim();
     if (!q) {
@@ -208,6 +211,7 @@ function closeAdd() {
   showAdd.value = false;
   newSymbol.value = '';
   addSearchResults.value = [];
+  addError.value = '';
 }
 
 async function pickSearchResult(r) {
@@ -217,7 +221,12 @@ async function pickSearchResult(r) {
 }
 
 async function addToList(raw) {
+  addError.value = '';
   const resolved = await marketStore.addToWatchlist(raw);
+  if (!resolved) {
+    addError.value = 'Quote data unavailable for this symbol';
+    return null;
+  }
   newSymbol.value = '';
   showAdd.value = false;
   addSearchResults.value = [];

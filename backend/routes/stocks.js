@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getMarketOverview, getQuote, getMultipleQuotes, searchSymbols as searchYahoo } from '../services/yahooFinance.js';
+import { getMarketOverview, getQuote, getMultipleQuotes, getQuotableSymbols, searchSymbols as searchYahoo } from '../services/yahooFinance.js';
 import { getFinnhubQuote, getMarketOverview as getFinnhubMarketOverview, searchSymbols as searchFinnhub } from '../services/finnhub.js';
 import { getQuote as getAvQuote } from '../services/alphaVantage.js';
 import { getHistoricalSeries, quoteFromDisk as historyQuoteFromDisk } from '../services/historyProvider.js';
@@ -10,13 +10,33 @@ const INTRADAY_INTERVALS = new Set(['1min', '5min', '15min', '30min', '45min', '
 
 const router = Router();
 
+async function mergeSearchResults(q) {
+  const [yahoo, finnhub] = await Promise.all([
+    searchYahoo(q).catch(() => []),
+    searchFinnhub(q).catch(() => [])
+  ]);
+  const seen = new Set();
+  const data = [];
+  for (const r of [...yahoo, ...finnhub]) {
+    if (!r?.symbol || seen.has(r.symbol)) continue;
+    seen.add(r.symbol);
+    data.push(enrichSearchResult(r));
+  }
+  data.sort((a, b) => rankSearchResult(q, b) - rankSearchResult(q, a));
+  return data;
+}
+
+/** Keep only symbols we can actually quote (disk cache or live fetch). */
+async function filterQuotableResults(results, limit = 15) {
+  const candidates = results.slice(0, 25);
+  const quotable = await getQuotableSymbols(candidates.map(r => r.symbol));
+  return candidates.filter(r => quotable.has(r.symbol)).slice(0, limit);
+}
+
 async function quoteFromHistory(symbol) {
   const fromDisk = historyQuoteFromDisk(symbol);
   if (fromDisk) return fromDisk;
   const hist = await getHistoricalSeries(symbol, 5, 7 * 24 * 3600_000).catch(() => null);
-  // #region agent log
-  fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:quoteFromHistory',message:'history fallback',data:{symbol,fromDisk:!!fromDisk,histLen:hist?.length||0},timestamp:Date.now(),hypothesisId:'B,C'})}).catch(()=>{});
-  // #endregion
   if (!hist?.length) return null;
   const last = hist[hist.length - 1];
   const prev = hist.length > 1 ? hist[hist.length - 2] : last;
@@ -41,9 +61,6 @@ router.get('/watchlist', async (req, res) => {
   if (!symbols.length) return res.json({ success: true, data: [] });
   try {
     let data = await getMultipleQuotes(symbols);
-    // #region agent log
-    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:multi',message:'getMultipleQuotes result',data:{symbols,count:data?.length||0,returned:data?.map(q=>q.symbol)||[]},timestamp:Date.now(),hypothesisId:'A,B'})}).catch(()=>{});
-    // #endregion
 
     // Fill any symbols Yahoo missed (rate limits, etc.)
     const have = new Set((data || []).map(q => q.symbol));
@@ -52,25 +69,15 @@ router.get('/watchlist', async (req, res) => {
       const extras = await Promise.all(
         missing.map(async sym => {
           const q = await getQuote(sym).catch(() => null);
-          const hist = q ? null : await quoteFromHistory(sym);
-          // #region agent log
-          fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:fallback',message:'per-symbol fallback',data:{sym,fromGetQuote:!!q,fromHistory:!!hist,stale:q?.stale||hist?.stale||false},timestamp:Date.now(),hypothesisId:'B,C'})}).catch(()=>{});
-          // #endregion
-          return q || hist;
+          return q || quoteFromHistory(sym);
         })
       );
       data = [...(data || []), ...extras.filter(Boolean)];
     }
 
-    // #region agent log
-    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:final',message:'watchlist response',data:{symbols,finalCount:data?.length||0,ok:!!data?.length},timestamp:Date.now(),hypothesisId:'A,B,C,D,E'})}).catch(()=>{});
-    // #endregion
     if (data?.length) return res.json({ success: true, data });
     return res.status(503).json({ success: false, error: 'Quote data unavailable' });
-  } catch (err) {
-    // #region agent log
-    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'stocks.js:watchlist:catch',message:'watchlist threw',data:{symbols,error:err?.message||String(err)},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
-    // #endregion
+  } catch {
     return res.status(503).json({ success: false, error: 'Quote data unavailable' });
   }
 });
@@ -129,21 +136,8 @@ router.get('/search', async (req, res) => {
   const { q } = req.query;
   if (!q) return res.json({ success: true, data: [] });
   try {
-    // Yahoo first — best international coverage (ABI.BR, INGA.AS, etc.).
-    // Merge with Finnhub and dedupe so US + global results both appear.
-    const [yahoo, finnhub] = await Promise.all([
-      searchYahoo(q).catch(() => []),
-      searchFinnhub(q).catch(() => [])
-    ]);
-    const seen = new Set();
-    const data = [];
-    for (const r of [...yahoo, ...finnhub]) {
-      if (!r?.symbol || seen.has(r.symbol)) continue;
-      seen.add(r.symbol);
-      data.push(enrichSearchResult(r));
-    }
-    data.sort((a, b) => rankSearchResult(q, b) - rankSearchResult(q, a));
-    res.json({ success: true, data: data.slice(0, 15) });
+    const data = (await mergeSearchResults(q)).slice(0, 15);
+    res.json({ success: true, data });
   } catch {
     res.json({ success: true, data: [] });
   }
@@ -154,22 +148,13 @@ router.get('/resolve', async (req, res) => {
   if (!q?.trim()) return res.json({ success: true, data: null });
   const input = q.trim().toUpperCase();
   try {
-    const [yahoo, finnhub] = await Promise.all([
-      searchYahoo(q).catch(() => []),
-      searchFinnhub(q).catch(() => [])
-    ]);
-    const seen = new Set();
-    const results = [];
-    for (const r of [...yahoo, ...finnhub]) {
-      if (!r?.symbol || seen.has(r.symbol)) continue;
-      seen.add(r.symbol);
-      results.push(enrichSearchResult(r));
-    }
-    const symbol = pickBestSearchMatch(input, results) || input;
-    const match = results.find(r => r.symbol === symbol) || null;
+    const merged = await mergeSearchResults(q);
+    const results = await filterQuotableResults(merged, 20);
+    const symbol = pickBestSearchMatch(input, results) || results.find(r => r.symbol === input)?.symbol || null;
+    const match = symbol ? results.find(r => r.symbol === symbol) || null : null;
     res.json({ success: true, data: { symbol, match, alternatives: results.slice(0, 8) } });
   } catch {
-    res.json({ success: true, data: { symbol: input, match: null, alternatives: [] } });
+    res.json({ success: true, data: { symbol: null, match: null, alternatives: [] } });
   }
 });
 

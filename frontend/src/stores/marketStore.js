@@ -291,13 +291,13 @@ export const useMarketStore = defineStore('market', () => {
 
   async function resolveSymbol(input) {
     const sym = input.trim().toUpperCase();
-    if (!sym) return sym;
-    if (/\.[A-Z]{1,4}$/.test(sym)) return sym;
+    if (!sym) return null;
     try {
       const res = await stocksApi.resolve(sym);
-      return res.data.data?.symbol || sym;
+      const { symbol, match } = res.data.data || {};
+      return match ? symbol : null;
     } catch {
-      return sym;
+      return null;
     }
   }
 
@@ -362,6 +362,7 @@ export const useMarketStore = defineStore('market', () => {
 
   async function addToWatchlist(symbol, listId) {
     const resolved = await resolveSymbol(symbol);
+    if (!resolved) return null;
     const targetId = listId || activeWatchlistId.value;
     const list = watchlistsState.value.lists.find(l => l.id === targetId);
     if (!list || list.symbols.includes(resolved)) return resolved;

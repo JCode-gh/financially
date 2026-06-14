@@ -165,9 +165,6 @@ async function fetchIntlQuotes(symbols) {
     if (cached) results.push(cached);
     else needLive.push(sym);
   }
-  // #region agent log
-  fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:fetchIntlQuotes',message:'intl quote split',data:{symbols,cached:results.map(q=>q.symbol),needLive},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-  // #endregion
   if (needLive.length) {
     const live = await pLimit(needLive.map(sym => () => quoteViaChart(sym)), 6, 150);
     const got = new Set(live.filter(Boolean).map(q => q.symbol));
@@ -178,9 +175,6 @@ async function fetchIntlQuotes(symbols) {
       const stale = quoteFromDisk(sym);
       if (stale) results.push(stale);
     }
-    // #region agent log
-    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:fetchIntlQuotes:live',message:'chart live results',data:{needLive,got:[...got],missed:needLive.filter(s=>!got.has(s)&&!results.find(q=>q.symbol===s)),staleFallback:results.filter(q=>q.stale).map(q=>q.symbol)},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
-    // #endregion
   }
   return results;
 }
@@ -215,7 +209,7 @@ function chartUrl(base, symbol, params) {
 const CURL_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 
 // Yahoo often 429s Node.js HTTP clients; shell curl works reliably on macOS/Linux.
-async function curlChartJson(url) {
+async function curlYahooJson(url) {
   if (!/^https:\/\/query[12]\.finance\.yahoo\.com\//.test(url)) return null;
   const curlBins = ['curl', '/usr/bin/curl', '/nix/var/nix/profiles/default/bin/curl'];
   for (const bin of curlBins) {
@@ -226,54 +220,33 @@ async function curlChartJson(url) {
       );
       const text = stdout?.trim();
       if (!text || text.startsWith('Too Many')) continue;
-      const data = JSON.parse(text);
-      if (data?.chart?.result?.[0]) return data;
+      return JSON.parse(text);
     } catch { /* try next curl path */ }
   }
   return null;
 }
 
+async function curlChartJson(url) {
+  const data = await curlYahooJson(url);
+  return data?.chart?.result?.[0] ? data : null;
+}
+
 async function getChartJson(symbol, params) {
-  if (process.env.DEBUG_SIMULATE_CHART_FAIL === '1') {
-    // #region agent log
-    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:simulate',message:'chart fetch simulated fail',data:{symbol},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-    return null;
-  }
-  let curlOk = false;
-  let curlErr = null;
   for (const base of [BASE1, BASE2]) {
     const data = await curlChartJson(chartUrl(base, symbol, params));
-    if (data?.chart?.result?.[0]) {
-      curlOk = true;
-      // #region agent log
-      fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:curl',message:'chart via curl ok',data:{symbol,base},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
-      return data;
-    }
+    if (data?.chart?.result?.[0]) return data;
   }
   // Containers often lack curl (Railway/Nixpacks). Fall back to direct http.get —
   // NOT yget — so a v7 session backoff never silently blocks v8 chart requests.
-  if (Date.now() < chartBackoffUntil) {
-    // #region agent log
-    fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:backoff',message:'chart backoff active',data:{symbol,chartBackoffUntil},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
-    return null;
-  }
+  if (Date.now() < chartBackoffUntil) return null;
   for (const base of [BASE1, BASE2]) {
     try {
       const res = await http.get(chartUrl(base, symbol, params), {
         headers: { 'User-Agent': UA, Accept: '*/*', Referer: 'https://finance.yahoo.com/' },
         timeout: 8000
       });
-      if (res.data?.chart?.result?.[0]) {
-        // #region agent log
-        fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:axios',message:'chart via axios ok',data:{symbol,base},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
-        return res.data;
-      }
+      if (res.data?.chart?.result?.[0]) return res.data;
     } catch (e) {
-      curlErr = e?.response?.status || e?.code || e?.message;
       const status = e?.response?.status;
       if (status === 429 || status === 999) {
         chartBackoffUntil = Date.now() + CHART_BACKOFF_MS;
@@ -281,9 +254,6 @@ async function getChartJson(symbol, params) {
       }
     }
   }
-  // #region agent log
-  fetch('http://127.0.0.1:7933/ingest/484bf9b6-9aed-4f59-8451-4a6a892f0530',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d04438'},body:JSON.stringify({sessionId:'d04438',location:'yahooFinance.js:getChartJson:fail',message:'chart fetch failed',data:{symbol,curlOk,axiosErr:curlErr,chartBackoffUntil},timestamp:Date.now(),hypothesisId:'A,D'})}).catch(()=>{});
-  // #endregion
   return null;
 }
 
@@ -459,6 +429,28 @@ export async function getMultipleQuotes(symbols) {
   });
 }
 
+/** Symbols we can serve a quote for right now (disk cache or live fetch). */
+export async function getQuotableSymbols(symbols) {
+  const out = new Set();
+  const pending = [];
+  for (const raw of symbols) {
+    const sym = raw.toUpperCase();
+    if (quoteFromDisk(sym)) out.add(sym);
+    else pending.push(sym);
+  }
+  if (!pending.length) return out;
+
+  const quotes = await getMultipleQuotes(pending);
+  for (const q of quotes) out.add(q.symbol);
+
+  for (const sym of pending) {
+    if (out.has(sym)) continue;
+    const q = await getQuote(sym).catch(() => null);
+    if (q) out.add(sym);
+  }
+  return out;
+}
+
 // Fetch daily OHLCV via the public chart API (works for US + EU ETFs like WEBN.DE).
 export async function getHistorical(symbol, days = 100) {
   const candles = await cached(`hist_${symbol}`, 20 * 60_000, () => fetchChartDaily(symbol));
@@ -466,28 +458,54 @@ export async function getHistorical(symbol, days = 100) {
   return candles.slice(-days);
 }
 
+function searchQuotesFromPayload(data) {
+  const raw = data?.quotes || data?.finance?.result?.[0]?.quotes || [];
+  return raw
+    .filter(r => ['EQUITY', 'ETF'].includes(r.quoteType))
+    .slice(0, 15)
+    .map(r => ({
+      symbol: r.symbol,
+      name: r.longname || r.shortname,
+      exchange: r.exchDisp || r.exchange || '',
+      type: r.quoteType,
+      ticker: r.symbol.includes('.') ? r.symbol.split('.')[0] : r.symbol
+    }));
+}
+
+function searchUrl(base, params) {
+  const qs = new URLSearchParams(
+    Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))
+  );
+  return `${base}/v1/finance/search?${qs}`;
+}
+
 export async function searchSymbols(query) {
-  return cached(`search_${query}`, 300_000, async () => {
+  const key = `search_${query}`;
+  const hit = cache.get(key);
+  if (hit && hit.data?.length && Date.now() - hit.ts < 300_000) return hit.data;
+
+  const fetch = async () => {
     const params = { q: query, quotesCount: 15, newsCount: 0 };
     const headers = { 'User-Agent': UA, 'Accept': '*/*', 'Referer': 'https://finance.yahoo.com' };
 
     for (const base of [BASE2, BASE1]) {
+      const url = searchUrl(base, params);
+      const viaCurl = await curlYahooJson(url);
+      const curlResults = searchQuotesFromPayload(viaCurl);
+      if (curlResults.length) return curlResults;
+
       try {
         const res = await http.get(`${base}/v1/finance/search`, { params, headers });
-        return (res.data?.finance?.result?.[0]?.quotes || [])
-          .filter(r => ['EQUITY', 'ETF'].includes(r.quoteType))
-          .slice(0, 15)
-          .map(r => ({
-            symbol: r.symbol,
-            name: r.longname || r.shortname,
-            exchange: r.exchDisp || r.exchange || '',
-            type: r.quoteType,
-            ticker: r.symbol.includes('.') ? r.symbol.split('.')[0] : r.symbol
-          }));
+        const results = searchQuotesFromPayload(res.data);
+        if (results.length) return results;
       } catch (e) {
         noteYahooError(e);
       }
     }
     return [];
-  });
+  };
+
+  const data = await fetch();
+  if (data.length) cache.set(key, { data, ts: Date.now() });
+  return data;
 }
