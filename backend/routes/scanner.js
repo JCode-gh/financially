@@ -6,6 +6,10 @@ import { getDB } from '../db/database.js';
 import { SCAN_GATES } from '../models/scannerScoring.js';
 import { getSymbolsReadyForScan, getWarmerStatus } from '../jobs/historyWarmer.js';
 import { getMarketRegime } from '../models/marketRegime.js';
+import { asyncHandler, ok } from '../lib/errors.js';
+import { parseSymbols, clampInt } from '../lib/validate.js';
+import { rateLimit } from '../lib/rateLimit.js';
+import { withLock } from '../lib/jobLock.js';
 
 const router = Router();
 
@@ -40,61 +44,41 @@ async function getScanMeta() {
   };
 }
 
-router.get('/latest', async (req, res) => {
-  try {
-    const data = getLatestScan();
-    res.json({ success: true, data: { ...data, meta: await getScanMeta() } });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+router.get('/latest', asyncHandler(async (req, res) => {
+  const data = getLatestScan();
+  return ok(res, { ...data, meta: await getScanMeta() });
+}));
 
-router.post('/run', async (req, res) => {
-  try {
-    const bodySymbols = (req.body?.symbols || [])
-      .map(s => String(s).trim().toUpperCase())
-      .filter(Boolean);
-    const symbols = bodySymbols.length ? bodySymbols : getSymbolsReadyForScan();
-    const result = await runScan(symbols);
-    if (result.skipped) {
-      return res.json({ success: true, data: { ...getLatestScan(), meta: await getScanMeta() }, note: 'scan already in progress' });
-    }
-    res.json({
-      success: true,
-      data: {
-        runAt: new Date().toISOString(),
-        results: result.results,
-        meta: await getScanMeta()
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+router.post('/run', rateLimit({ windowMs: 10 * 60_000, max: 6 }), asyncHandler(async (req, res) => {
+  const raw = Array.isArray(req.body?.symbols) ? req.body.symbols.join(',') : '';
+  const bodySymbols = parseSymbols(raw, { max: 80 });
+  const symbols = bodySymbols.length ? bodySymbols : getSymbolsReadyForScan();
+
+  const result = await withLock('scan', () => runScan(symbols));
+  if (result?.skipped) {
+    return ok(res, { ...getLatestScan(), meta: await getScanMeta() }, { note: 'scan already in progress' });
   }
-});
+  return ok(res, {
+    runAt: new Date().toISOString(),
+    results: result.results,
+    meta: await getScanMeta()
+  });
+}));
 
 router.get('/alerts', (req, res) => {
-  try {
-    const limit = Math.min(100, parseInt(req.query.limit || '40', 10));
-    res.json({ success: true, data: getAlerts(limit) });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  const limit = clampInt(req.query.limit, { min: 1, max: 100, fallback: 40 });
+  return ok(res, getAlerts(limit));
 });
 
-router.get('/earnings', async (req, res) => {
-  try {
-    const map = await getUpcomingEarnings();
-    const symbols = (req.query.symbols || getSymbolsReadyForScan().join(','))
-      .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-    const filtered = {};
-    for (const sym of symbols) {
-      const hit = map[sym] || map[sym.replace('-', '.')];
-      if (hit) filtered[sym] = hit;
-    }
-    res.json({ success: true, data: filtered });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+router.get('/earnings', asyncHandler(async (req, res) => {
+  const map = await getUpcomingEarnings();
+  const symbols = parseSymbols(req.query.symbols || getSymbolsReadyForScan().join(','), { max: 80 });
+  const filtered = {};
+  for (const sym of symbols) {
+    const hit = map[sym] || map[sym.replace('-', '.')];
+    if (hit) filtered[sym] = hit;
   }
-});
+  return ok(res, filtered);
+}));
 
 export default router;

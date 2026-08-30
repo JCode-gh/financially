@@ -30,6 +30,87 @@ const EXCHANGE_LABELS = {
   US: 'United States'
 };
 
+export function isInternationalTicker(symbol) {
+  return /^[A-Z0-9-]+\.[A-Z]{1,4}$/.test(String(symbol || '').toUpperCase()) && !String(symbol).startsWith('^');
+}
+
+export function newsLocalesForSymbol(symbol) {
+  const suffix = String(symbol || '').split('.').pop()?.toUpperCase();
+  const byEx = {
+    BR: [
+      { hl: 'nl', gl: 'BE', ceid: 'BE:nl' },
+      { hl: 'fr', gl: 'BE', ceid: 'BE:fr' },
+      { hl: 'en', gl: 'BE', ceid: 'BE:en' }
+    ],
+    AS: [
+      { hl: 'nl', gl: 'NL', ceid: 'NL:nl' },
+      { hl: 'en', gl: 'NL', ceid: 'NL:en' }
+    ],
+    PA: [
+      { hl: 'fr', gl: 'FR', ceid: 'FR:fr' },
+      { hl: 'en', gl: 'FR', ceid: 'FR:en' }
+    ],
+    DE: [
+      { hl: 'de', gl: 'DE', ceid: 'DE:de' },
+      { hl: 'en', gl: 'DE', ceid: 'DE:en' }
+    ],
+    F: [
+      { hl: 'de', gl: 'DE', ceid: 'DE:de' },
+      { hl: 'en', gl: 'DE', ceid: 'DE:en' }
+    ],
+    MU: [
+      { hl: 'de', gl: 'DE', ceid: 'DE:de' },
+      { hl: 'en', gl: 'DE', ceid: 'DE:en' }
+    ],
+    L: [{ hl: 'en', gl: 'GB', ceid: 'GB:en' }],
+    MI: [
+      { hl: 'it', gl: 'IT', ceid: 'IT:it' },
+      { hl: 'en', gl: 'IT', ceid: 'IT:en' }
+    ],
+    MC: [
+      { hl: 'es', gl: 'ES', ceid: 'ES:es' },
+      { hl: 'en', gl: 'ES', ceid: 'ES:en' }
+    ],
+    SW: [
+      { hl: 'de', gl: 'CH', ceid: 'CH:de' },
+      { hl: 'fr', gl: 'CH', ceid: 'CH:fr' },
+      { hl: 'en', gl: 'CH', ceid: 'CH:en' }
+    ],
+    ST: [
+      { hl: 'sv', gl: 'SE', ceid: 'SE:sv' },
+      { hl: 'en', gl: 'SE', ceid: 'SE:en' }
+    ],
+    HE: [
+      { hl: 'fi', gl: 'FI', ceid: 'FI:fi' },
+      { hl: 'en', gl: 'FI', ceid: 'FI:en' }
+    ],
+    CO: [
+      { hl: 'da', gl: 'DK', ceid: 'DK:da' },
+      { hl: 'en', gl: 'DK', ceid: 'DK:en' }
+    ],
+    OL: [
+      { hl: 'no', gl: 'NO', ceid: 'NO:nb' },
+      { hl: 'en', gl: 'NO', ceid: 'NO:en' }
+    ],
+    VI: [
+      { hl: 'de', gl: 'AT', ceid: 'AT:de' },
+      { hl: 'en', gl: 'AT', ceid: 'AT:en' }
+    ],
+    LS: [
+      { hl: 'pt', gl: 'PT', ceid: 'PT:pt' },
+      { hl: 'en', gl: 'PT', ceid: 'PT:en' }
+    ]
+  };
+  if (byEx[suffix]) return byEx[suffix];
+  if (isInternationalTicker(symbol)) {
+    return [
+      { hl: 'en', gl: 'GB', ceid: 'GB:en' },
+      { hl: 'en', gl: 'US', ceid: 'US:en' }
+    ];
+  }
+  return [{ hl: 'en', gl: 'US', ceid: 'US:en' }];
+}
+
 export function marketFromSymbol(symbol) {
   if (!symbol?.includes('.')) return 'United States';
   const suffix = symbol.split('.').pop()?.toUpperCase();

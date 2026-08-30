@@ -1,37 +1,51 @@
 <template>
-  <div class="flex flex-col h-full overflow-hidden bg-surface">
-    <!-- Back + symbol header -->
-    <div class="flex items-center gap-3 px-4 py-2 border-b border-surface-300 flex-shrink-0">
-      <button @click="router.push({ name: 'stocks' })" class="text-gray-400 hover:text-white transition-colors p-1">
+  <div class="flex flex-col h-full overflow-y-auto lg:overflow-hidden bg-surface">
+    <div class="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2 border-b border-surface-300 flex-shrink-0">
+      <button
+        type="button"
+        @click="goBack"
+        :aria-label="$t('common.back')"
+        class="text-gray-400 hover:text-white transition-colors p-1 focus-visible:ring-2 ring-accent/50 rounded"
+      >
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="15 18 9 12 15 6"></polyline>
         </svg>
       </button>
       <div class="flex-1 min-w-0">
-        <span class="font-mono text-lg font-bold text-white">{{ symbol }}</span>
-        <span v-if="quote?.name" class="text-sm text-gray-500 ml-2">{{ quote.name }}</span>
+        <span class="font-mono text-base sm:text-lg font-bold text-white">{{ symbol }}</span>
+        <span v-if="quote?.name" class="text-sm text-gray-500 ml-2 hidden sm:inline">{{ quote.name }}</span>
+        <span v-if="quote?.price != null" class="ml-2 sm:ml-3 font-mono text-sm text-gray-300">{{ formatPrice(quote.price, quote.currency) }}</span>
+        <span v-if="quote?.changePct != null" class="ml-1.5 font-mono text-sm" :class="quote.changePct >= 0 ? 'text-bull' : 'text-bear'">
+          {{ formatPct(quote.changePct) }}
+        </span>
       </div>
       <button
+        v-if="!onList"
+        type="button"
+        @click="addToList"
+        class="text-xs font-mono px-2.5 py-1.5 rounded border border-surface-300 text-gray-400 hover:text-accent hover:border-accent/40"
+      >
+        {{ $t('common.addToList') }}
+      </button>
+      <button
+        v-if="ui.isPro"
         @click="showTradeSetup = true"
-        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/50 text-accent text-xs font-mono hover:bg-accent/10 transition-colors flex-shrink-0"
+        class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-accent/50 text-accent text-xs font-mono hover:bg-accent/10 transition-colors flex-shrink-0"
       >
         <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="22 7 13.5 15.5 8.5 10.5 2 17" />
           <polyline points="16 7 22 7 22 13" />
         </svg>
-        Trade Setup
+        {{ $t('setup.tradeSetup') }}
       </button>
     </div>
 
-    <!-- Plain-language buy / sell / hold -->
     <StockVerdict :symbol="symbol" :loading="generating" />
 
-    <!-- Chart with price targets drawn on it -->
-    <div class="flex-1 min-h-0 overflow-hidden p-2 pt-0">
-      <StockChart :symbol="symbol" show-predictions />
+    <div class="min-h-[280px] h-[46vh] lg:h-auto lg:flex-1 lg:min-h-0 overflow-hidden p-3 pt-0">
+      <StockChart :symbol="symbol" hide-quote />
     </div>
 
-    <!-- Trade setup modal -->
     <TradeSetupModal
       :visible="showTradeSetup"
       :symbol="symbol"
@@ -41,10 +55,12 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useMarketStore } from '../stores/marketStore.js';
 import { usePredictionStore } from '../stores/predictionStore.js';
+import { useUiStore } from '../stores/uiStore.js';
+import { formatPrice, formatPct } from '../utils/format.js';
 import StockChart from '../components/stocks/StockChart.vue';
 import StockVerdict from '../components/predictions/StockVerdict.vue';
 import TradeSetupModal from '../components/predictions/TradeSetupModal.vue';
@@ -53,29 +69,33 @@ const route = useRoute();
 const router = useRouter();
 const marketStore = useMarketStore();
 const predictionStore = usePredictionStore();
+const ui = useUiStore();
 
 const symbol = computed(() => (route.params.symbol || '').toUpperCase());
-const quote = computed(() => marketStore.selectedQuote);
+const quote = computed(() =>
+  marketStore.selectedQuote?.symbol === symbol.value ? marketStore.selectedQuote : null
+);
 const generating = computed(() => predictionStore.generating);
+const onList = computed(() => marketStore.isOnWatchlist(symbol.value));
 const showTradeSetup = ref(false);
+
+function goBack() {
+  if (window.history.length > 1) router.back();
+  else router.push({ name: 'dashboard' });
+}
+
+async function addToList() {
+  await marketStore.addToWatchlist(symbol.value);
+}
 
 async function loadStock(sym) {
   if (!sym) return;
   await marketStore.selectSymbol(sym);
-  // Let the chart fetch history first — avoids hammering Yahoo with parallel requests
-  await new Promise(r => setTimeout(r, 300));
+  await new Promise(r => setTimeout(r, 200));
   try {
-    await predictionStore.generateForSymbol(sym);
-  } catch { /* ignore */ }
+    await predictionStore.generateForSymbol(sym, marketStore.selectedQuote?.name);
+  } catch { /* shown in verdict */ }
 }
 
 watch(symbol, loadStock, { immediate: true });
-
-onMounted(() => {
-  marketStore.connectLive();
-});
-
-onUnmounted(() => {
-  marketStore.disconnectLive();
-});
 </script>

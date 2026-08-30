@@ -1,13 +1,13 @@
 <template>
-  <div class="card flex flex-col h-full overflow-hidden">
-    <div class="flex items-center justify-between px-3 py-2 border-b border-surface-300 flex-shrink-0">
-      <span class="label">Alerts</span>
+  <div :class="embed ? 'flex flex-col h-full overflow-hidden min-h-0' : 'card flex flex-col h-full overflow-hidden'">
+    <div v-if="!embed" class="flex items-center justify-between px-3 py-2 border-b border-surface-300 flex-shrink-0">
+      <span class="label">{{ $t('alerts.title') }}</span>
       <span v-if="alerts.length" class="text-xs font-mono text-gray-500">{{ alerts.length }}</span>
     </div>
 
     <div class="panel-scroll flex-1 min-h-0">
       <div v-if="!alerts.length" class="flex items-center justify-center h-16 text-gray-500 text-xs">
-        No alerts yet — the scanner adds them automatically
+        {{ $t('alerts.empty') }}
       </div>
       <button
         v-for="a in alerts"
@@ -30,26 +30,24 @@
 
 <script setup>
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useScannerStore } from '../../stores/scannerStore.js';
 import { useMarketStore } from '../../stores/marketStore.js';
 
+defineProps({
+  embed: Boolean
+});
+
 const scanner = useScannerStore();
 const market = useMarketStore();
+const { t } = useI18n();
 const alerts = computed(() => scanner.alerts);
 
-const KIND_LABELS = {
-  macd_cross: 'MACD cross',
-  rsi_extreme: 'RSI extreme',
-  bb_break: 'Bollinger break',
-  golden_cross: 'Golden cross',
-  death_cross: 'Death cross',
-  breakout: '20d breakout',
-  week52: '52-week level',
-  news_spike: 'News surge',
-  earnings_soon: 'Earnings'
-};
-
-function kindLabel(kind) { return KIND_LABELS[kind] || kind; }
+function kindLabel(kind) {
+  const key = `alerts.kinds.${kind}`;
+  const translated = t(key);
+  return translated === key ? kind : translated;
+}
 function dirIcon(d) { return d > 0 ? '▲' : d < 0 ? '▼' : '◆'; }
 function dirColor(d) { return d > 0 ? 'text-bull' : d < 0 ? 'text-bear' : 'text-neutral'; }
 
@@ -57,11 +55,11 @@ function timeAgo(ts) {
   if (!ts) return '';
   const iso = String(ts).includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (isNaN(mins) || mins < 1) return 'now';
-  if (mins < 60) return `${mins}m`;
+  if (isNaN(mins) || mins < 1) return t('time.now');
+  if (mins < 60) return t('time.minutesShort', { n: mins });
   const h = Math.floor(mins / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d`;
+  if (h < 24) return t('time.hoursShort', { n: h });
+  return t('time.daysShort', { n: Math.floor(h / 24) });
 }
 
 async function select(ticker) {

@@ -10,9 +10,9 @@
         <span v-if="displayName" class="text-gray-500 text-xs ml-1.5 hidden sm:inline">{{ displayName }}</span>
       </div>
       <div v-if="displayPrice != null" class="flex items-center gap-1.5 flex-shrink-0 font-mono">
-        <span class="text-sm font-semibold text-white">${{ displayPrice.toFixed(2) }}</span>
+        <span class="text-sm font-semibold text-white">{{ formatPrice(displayPrice, quote?.currency) }}</span>
         <span class="text-xs" :class="displayChangePct >= 0 ? 'text-bull' : 'text-bear'">
-          {{ displayChangePct >= 0 ? '+' : '' }}{{ displayChangePct.toFixed(2) }}%
+          {{ formatPct(displayChangePct) }}
         </span>
       </div>
     </div>
@@ -37,10 +37,13 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { createChart, ColorType } from 'lightweight-charts';
 import { stocksApi } from '../../services/api.js';
+import { formatPrice, formatPct } from '../../utils/format.js';
+import { t } from '../../i18n/index.js';
 
 const props = defineProps({
   symbol: { type: String, required: true },
   quote: { type: Object, default: null },
+  candles: { type: Array, default: null },
   staggerIndex: { type: Number, default: 0 }
 });
 
@@ -150,6 +153,14 @@ async function fetchData() {
   const sym = props.symbol;
   if (!sym) return;
 
+  if (props.candles?.length) {
+    candles.value = props.candles;
+    error.value = null;
+    loading.value = false;
+    renderCandles(candles.value);
+    return;
+  }
+
   const gen = ++loadGeneration;
   const id = ++reqId;
   loading.value = true;
@@ -175,7 +186,7 @@ async function fetchData() {
     }
   } catch {
     if (id !== reqId || gen !== loadGeneration) return;
-    error.value = 'Failed to load';
+    error.value = t('errors.chartShort');
     candles.value = [];
     scheduleAutoRetry();
   } finally {
@@ -206,6 +217,15 @@ watch(() => props.symbol, () => {
   retryAttempt = 0;
   candles.value = [];
   fetchData();
+});
+
+watch(() => props.candles, (next) => {
+  if (next?.length) {
+    candles.value = next;
+    error.value = null;
+    loading.value = false;
+    renderCandles(next);
+  }
 });
 
 onUnmounted(() => {

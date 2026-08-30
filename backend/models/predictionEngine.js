@@ -35,42 +35,50 @@ export function horizonTarget(days, score, price, atr) {
 // 1.5×ATR stop gets whipsawed out before the move develops, dragging the win
 // rate down. Wider stops + a ~1.5:1 reward:risk ratio survive normal noise.
 function atrMultsForDays(maxDays) {
-  if (maxDays <= 2)  return { stop: 1.3, target: 2.0 }; // day / scalp
-  if (maxDays <= 5)  return { stop: 1.8, target: 2.7 }; // short swing
-  if (maxDays <= 10) return { stop: 2.2, target: 3.3 }; // medium swing
-  if (maxDays <= 20) return { stop: 2.6, target: 3.9 }; // swing
-  return              { stop: 3.2, target: 4.8 };        // position
+  if (maxDays <= 2)   return { stop: 1.3, target: 2.0 };
+  if (maxDays <= 5)   return { stop: 1.8, target: 2.7 };
+  if (maxDays <= 10)  return { stop: 2.2, target: 3.3 };
+  if (maxDays <= 20)  return { stop: 2.6, target: 3.9 };
+  if (maxDays <= 70)  return { stop: 3.2, target: 4.8 };
+  if (maxDays <= 140) return { stop: 3.8, target: 5.8 };
+  if (maxDays <= 280) return { stop: 4.6, target: 7.0 };
+  if (maxDays <= 600) return { stop: 5.6, target: 8.5 };
+  return               { stop: 7.0, target: 10.5 };
 }
 
 // Variant of buildTradePlan that scales stops/targets for a user-chosen hold window.
-export function buildTradePlanForDays(direction, indicators, maxDays) {
+// Nearby swing S/R is only used on short holds. On month/year horizons it would
+// pin every plan to the same first resistance a few dollars away.
+export function buildTradePlanForDays(direction, indicators, maxDays, score = 0) {
+  const days = Math.max(1, Number(maxDays) || 1);
   const price = indicators.price;
   const atr = indicators.atr || price * 0.02;
   const { sr } = indicators;
   if (!direction || !price) return null;
 
-  const { stop: sM, target: tM } = atrMultsForDays(maxDays);
-  let entry = price, stop, target, stopBasis = 'ATR', targetBasis = 'ATR';
+  const { stop: sM, target: tM } = atrMultsForDays(days);
+  const ht = horizonTarget(days, score || direction * 0.35, price, atr);
+  let entry = price, stop, target, stopBasis = 'ATR', targetBasis = 'horizon';
 
   if (direction > 0) {
     stop = price - sM * atr;
-    if (sr?.support && price - sr.support.price < sM * 1.5 * atr && sr.support.price < price) {
-      stop = Math.min(stop, sr.support.price * 0.99);
+    target = ht.targetPrice > price ? ht.targetPrice : price + tM * atr;
+    if (days <= 20 && sr?.support && sr.support.price < price && sr.support.price > stop) {
+      stop = sr.support.price * 0.99;
       stopBasis = `support $${sr.support.price.toFixed(2)}`;
     }
-    target = price + tM * atr;
-    if (sr?.resistance && sr.resistance.price - price < tM * 1.5 * atr && sr.resistance.price > price * 1.01) {
+    if (days <= 20 && sr?.resistance && sr.resistance.price > price * 1.01 && sr.resistance.price < target) {
       target = sr.resistance.price * 0.998;
       targetBasis = `resistance $${sr.resistance.price.toFixed(2)}`;
     }
   } else {
     stop = price + sM * atr;
-    if (sr?.resistance && sr.resistance.price - price < sM * 1.5 * atr && sr.resistance.price > price) {
-      stop = Math.max(stop, sr.resistance.price * 1.01);
+    target = ht.targetPrice < price ? ht.targetPrice : price - tM * atr;
+    if (days <= 20 && sr?.resistance && sr.resistance.price > price && sr.resistance.price < stop) {
+      stop = sr.resistance.price * 1.01;
       stopBasis = `resistance $${sr.resistance.price.toFixed(2)}`;
     }
-    target = price - tM * atr;
-    if (sr?.support && price - sr.support.price < tM * 1.5 * atr && sr.support.price < price * 0.99) {
+    if (days <= 20 && sr?.support && sr.support.price < price * 0.99 && sr.support.price > target) {
       target = sr.support.price * 1.002;
       targetBasis = `support $${sr.support.price.toFixed(2)}`;
     }
@@ -92,7 +100,7 @@ export function buildTradePlanForDays(direction, indicators, maxDays) {
     positionPct,
     stopBasis,
     targetBasis,
-    maxDays
+    maxDays: days
   };
 }
 

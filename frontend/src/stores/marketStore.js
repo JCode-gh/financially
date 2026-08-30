@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia';
+import { t } from '../i18n/index.js';
 import { ref, computed } from 'vue';
 import { stocksApi } from '../services/api.js';
 import { getWsUrl } from '../config/api.js';
@@ -36,7 +37,7 @@ function normalizeWatchlistsState(state) {
 
 function defaultWatchlistsState() {
   const id = newListId();
-  return { activeId: id, lists: [{ id, name: 'My stocks', symbols: [], createdAt: Date.now() }] };
+  return { activeId: id, lists: [{ id, name: t('watch.defaultList'), symbols: [], createdAt: Date.now() }] };
 }
 
 function loadWatchlistsState() {
@@ -57,7 +58,7 @@ function loadWatchlistsState() {
       const id = newListId();
       const state = {
         activeId: id,
-        lists: [{ id, name: 'My stocks', symbols, createdAt: Date.now() }]
+        lists: [{ id, name: t('watch.defaultList'), symbols, createdAt: Date.now() }]
       };
       localStorage.removeItem(LEGACY_WATCHLIST_KEY);
       persistWatchlistsState(state);
@@ -118,6 +119,8 @@ export const useMarketStore = defineStore('market', () => {
   const loading = ref({ market: false, watchlist: false, historical: false, quote: false });
   const lastUpdated = ref(null);
   const error = ref(null);
+  const errors = ref({ market: null, watchlist: null, historical: null, quote: null });
+  const miniHistory = ref({});
   const liveTick = ref(null);
   const liveConnected = ref(false);
   let liveWs = null;
@@ -209,15 +212,19 @@ export const useMarketStore = defineStore('market', () => {
     try {
       const res = await stocksApi.market();
       marketData.value = res.data.data || [];
+      errors.value.market = null;
     } catch (e) {
-      error.value = 'Failed to load market data';
+      errors.value.market = e.normalized?.message || t('errors.market');
+      error.value = errors.value.market;
     } finally {
       loading.value.market = false;
     }
   }
 
+  let watchlistReqId = 0;
   async function fetchWatchlist() {
     const symbols = watchlistSymbols.value;
+    const reqId = ++watchlistReqId;
     if (!symbols.length) {
       watchlistData.value = [];
       lastUpdated.value = new Date();
@@ -227,14 +234,20 @@ export const useMarketStore = defineStore('market', () => {
     if (!hasCached) loading.value.watchlist = true;
     try {
       const res = await stocksApi.watchlist(symbols);
+      if (reqId !== watchlistReqId) return;
       watchlistData.value = res.data.data || [];
       mergeQuotesIntoCache(watchlistData.value);
       lastUpdated.value = new Date();
+      errors.value.watchlist = null;
       error.value = null;
     } catch (e) {
-      if (!hasCached) error.value = 'Failed to load watchlist';
+      if (reqId !== watchlistReqId) return;
+      if (!hasCached) {
+        errors.value.watchlist = e.normalized?.message || t('errors.watchlist');
+        error.value = errors.value.watchlist;
+      }
     } finally {
-      loading.value.watchlist = false;
+      if (reqId === watchlistReqId) loading.value.watchlist = false;
     }
   }
 
@@ -250,28 +263,56 @@ export const useMarketStore = defineStore('market', () => {
       const res = await stocksApi.historical(symbol || selectedSymbol.value, days, interval);
       if (reqId !== histReqId) return;
       if (res.data.success === false) {
-        error.value = res.data.error || 'Chart data unavailable';
+        errors.value.historical = res.data.error || 'Chart data unavailable';
+        error.value = errors.value.historical;
       } else {
         historicalData.value = res.data.data || [];
+        errors.value.historical = null;
         error.value = null;
       }
     } catch (e) {
-      if (reqId === histReqId) error.value = 'Failed to load chart data';
+      if (reqId === histReqId) {
+        errors.value.historical = e.normalized?.message || t('errors.chart');
+        error.value = errors.value.historical;
+      }
     } finally {
       if (reqId === histReqId) loading.value.historical = false;
     }
   }
 
+  let quoteReqId = 0;
   async function fetchQuote(symbol) {
+    const reqId = ++quoteReqId;
     loading.value.quote = true;
     try {
       const res = await stocksApi.quote(symbol);
+      if (reqId !== quoteReqId) return;
       selectedQuote.value = res.data.data;
+      errors.value.quote = null;
     } catch (e) {
-      error.value = 'Failed to load quote';
+      if (reqId !== quoteReqId) return;
+      errors.value.quote = e.normalized?.message || t('errors.quote');
+      error.value = errors.value.quote;
     } finally {
-      loading.value.quote = false;
+      if (reqId === quoteReqId) loading.value.quote = false;
     }
+  }
+
+  async function fetchHistoricalBatch(symbols, days = 63) {
+    if (!symbols?.length) return {};
+    try {
+      const res = await stocksApi.historicalBatch(symbols, days);
+      const data = res.data.data || {};
+      miniHistory.value = { ...miniHistory.value, ...data };
+      return data;
+    } catch {
+      return {};
+    }
+  }
+
+  function isOnWatchlist(symbol) {
+    const sym = String(symbol || '').toUpperCase();
+    return watchlistSymbols.value.includes(sym) || allWatchlistSymbols.value.includes(sym);
   }
 
   async function searchSymbol(query) {
@@ -302,7 +343,7 @@ export const useMarketStore = defineStore('market', () => {
   }
 
   function createWatchlist(name) {
-    const trimmed = name.trim() || 'New list';
+    const trimmed = name.trim() || t('watch.newListName');
     const id = newListId();
     watchlistsState.value = {
       ...watchlistsState.value,
@@ -460,12 +501,12 @@ export const useMarketStore = defineStore('market', () => {
   return {
     marketData, watchlistData, selectedSymbol, selectedQuote, historicalData, chartInterval,
     searchResults, watchlistSymbols, allWatchlistSymbols, watchlists, activeWatchlistId,
-    activeWatchlist, chartRange, loading, lastUpdated, error,
+    activeWatchlist, chartRange, loading, lastUpdated, error, errors, miniHistory,
     liveTick, liveConnected,
     selectedStock, topMovers,
-    fetchMarket, fetchWatchlist, fetchHistorical, fetchQuote, searchSymbol, resolveSymbol,
+    fetchMarket, fetchWatchlist, fetchHistorical, fetchHistoricalBatch, fetchQuote, searchSymbol, resolveSymbol,
     selectSymbol, addToWatchlist, removeFromWatchlist, createWatchlist, renameWatchlist,
     deleteWatchlist, setActiveWatchlist, reorderWatchlists, exportUserData, hydrateUserData, init,
-    connectLive, disconnectLive, syncLive
+    isOnWatchlist, connectLive, disconnectLive, syncLive
   };
 });

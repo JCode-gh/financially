@@ -1,21 +1,29 @@
 <template>
   <div class="card flex flex-col h-full overflow-hidden">
     <!-- Header with tabs -->
-    <div class="flex items-center justify-between px-3 py-2 border-b border-surface-300 flex-shrink-0">
+    <div class="flex flex-wrap items-center justify-between px-3 py-2 border-b border-surface-300 flex-shrink-0 gap-2">
       <div class="flex items-center gap-3">
         <button
           class="label transition-colors"
           :class="tab === 'opportunities' ? 'text-accent' : 'text-gray-500 hover:text-gray-300'"
           @click="tab = 'opportunities'"
-        >⚡ Opportunities</button>
+        >{{ $t('scanner.opportunities') }}</button>
         <button
           class="label transition-colors"
           :class="tab === 'model' ? 'text-accent' : 'text-gray-500 hover:text-gray-300'"
           @click="tab = 'model'"
-        >Model</button>
+        >{{ $t('scanner.model') }}</button>
       </div>
       <div class="flex items-center gap-2 text-xs font-mono">
-        <span v-if="lastScanAgo" class="text-gray-600">scan {{ lastScanAgo }}</span>
+        <button
+          type="button"
+          @click="callsOnly = !callsOnly"
+          class="px-1.5 py-0.5 rounded border"
+          :class="callsOnly ? 'border-accent/40 text-accent' : 'border-surface-300 text-gray-500'"
+        >
+          {{ callsOnly ? $t('scanner.calls') : $t('scanner.all') }}
+        </button>
+        <span v-if="lastScanAgo" class="text-gray-600">{{ $t('scanner.scan', { ago: lastScanAgo }) }}</span>
         <button
           @click="rescan"
           :disabled="running"
@@ -23,7 +31,7 @@
           :class="running ? 'border-surface-300 text-gray-500' : 'border-accent/40 text-accent hover:bg-accent/10'"
         >
           <span v-if="running" class="animate-spin inline-block w-2.5 h-2.5 border border-accent border-t-transparent rounded-full"></span>
-          {{ running ? 'Scanning' : 'Rescan' }}
+          {{ running ? $t('scanner.scanning') : $t('picks.rescan') }}
         </button>
       </div>
     </div>
@@ -31,10 +39,10 @@
     <!-- Opportunities tab -->
     <div v-if="tab === 'opportunities'" class="panel-scroll flex-1 min-h-0">
       <div v-if="!opportunities.length" class="flex flex-col items-center justify-center h-24 text-gray-500 text-xs gap-1.5">
-        <span v-if="loading || running">Scanning model universe…</span>
+        <span v-if="loading || running">{{ $t('picks.scanningPro') }}</span>
         <template v-else>
-          <span>No scan yet</span>
-          <span class="text-gray-600">Hit Rescan to rank your watchlist</span>
+          <span>{{ $t('scanner.noScan') }}</span>
+          <span class="text-gray-600">{{ $t('scanner.rescanHint') }}</span>
         </template>
       </div>
 
@@ -42,7 +50,7 @@
         v-for="(o, idx) in opportunities"
         :key="o.ticker"
         @click="select(o.ticker)"
-        class="w-full text-left px-3 py-2 border-b border-surface-300/40 hover:bg-surface-200/50 transition-colors group"
+        class="w-full text-left px-3 py-2.5 border-b border-surface-300/40 hover:bg-surface-200/50 transition-colors group"
         :class="selectedSymbol === o.ticker ? 'bg-surface-200/60 border-l-2 border-l-accent' : ''"
       >
         <div class="flex items-center gap-2">
@@ -89,7 +97,7 @@
           <!-- News pulse -->
           <span v-if="o.buzz >= 1.8 && o.newsCount >= 3" class="text-[10px] font-mono flex-shrink-0"
                 :class="o.newsScore > 0 ? 'text-bull' : o.newsScore < 0 ? 'text-bear' : 'text-gray-500'"
-                :title="'News flow ' + o.buzz + '× normal'">📰{{ o.buzz.toFixed(0) }}×</span>
+                :title="'News flow ' + o.buzz + '× normal'">{{ o.buzz.toFixed(0) }}× news</span>
         </div>
 
         <!-- Top reason + entry/stop/target -->
@@ -119,7 +127,13 @@ const scanner = useScannerStore();
 const market = useMarketStore();
 
 const tab = ref('opportunities');
-const opportunities = computed(() => scanner.opportunities);
+const callsOnly = ref(true);
+const opportunities = computed(() => {
+  const all = scanner.opportunities;
+  if (!callsOnly.value) return all;
+  const calls = all.filter(o => o.actionable || o.action === 'BUY' || o.action === 'SELL');
+  return calls.length ? calls : all.slice(0, 8);
+});
 const loading = computed(() => scanner.loading.scan);
 const running = computed(() => scanner.loading.running);
 const lastScanAgo = computed(() => scanner.lastScanAgo);

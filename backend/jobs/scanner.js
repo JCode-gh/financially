@@ -2,8 +2,8 @@
 
 import { getDB } from '../db/database.js';
 import { getHistoricalSeries } from '../services/historyProvider.js';
-import { getStockNews, getFinnhubQuote } from '../services/finnhub.js';
-import { getRssStockNews } from '../services/rssNews.js';
+import { getQuickQuote } from '../providers/marketData.js';
+import { getStockArticles } from '../providers/news.js';
 import { getUpcomingEarnings } from '../services/earningsCalendar.js';
 import { analyzeArticles } from '../models/sentimentAnalyzer.js';
 import { getHorizonWeights, computeScore, buildTradePlan, buildReasons, computeEnsembleScore, blendForHorizon } from '../models/predictionEngine.js';
@@ -21,16 +21,6 @@ export { getSymbolsReadyForScan };
 
 const HISTORY_FRESH_MS = 3 * 3600_000;
 let scanning = false;
-
-function dedupeArticles(articles) {
-  const seen = new Set();
-  return articles.filter(a => {
-    const key = (a.headline || '').toLowerCase().slice(0, 80);
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
 
 function withLiveQuote(candles, quote) {
   if (!quote?.price || !candles.length) return candles;
@@ -77,16 +67,14 @@ function detectAlerts(db, ticker, indicators, news, earnings) {
 }
 
 async function scanSymbolRaw(db, ticker, horizonWeights, earningsMap, marketRegime) {
-  const [candlesRaw, quote, fhNews, rssNews] = await Promise.all([
+  const [candlesRaw, quote, articles] = await Promise.all([
     getHistoricalSeries(ticker, 420, HISTORY_FRESH_MS).catch(() => null),
-    getFinnhubQuote(ticker).catch(() => null),
-    getStockNews(ticker).catch(() => []),
-    getRssStockNews(ticker).catch(() => [])
+    getQuickQuote(ticker).catch(() => null),
+    getStockArticles(ticker, undefined, { deep: false }).catch(() => [])
   ]);
   if (!candlesRaw || candlesRaw.length < 60) return null;
 
   const candles = withLiveQuote(candlesRaw, quote);
-  const articles = dedupeArticles([...(fhNews || []), ...(rssNews || [])]);
   const news = analyzeArticles(articles, ticker);
   const earnings = earningsMap[ticker] || earningsMap[ticker.replace('-', '.')] || null;
 

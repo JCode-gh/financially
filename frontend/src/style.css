@@ -3,7 +3,9 @@
 @tailwind utilities;
 
 @layer base {
-  html { @apply bg-surface text-gray-200; }
+  html { @apply bg-surface text-gray-200 overflow-x-hidden; }
+  body { @apply overflow-x-hidden; }
+  :focus-visible { @apply outline-none ring-2 ring-accent/50; }
 }
 
 @layer components {
@@ -57,3 +59,11 @@
 .signal-bar {
   @apply h-1.5 rounded-full transition-all duration-500;
 }
+
+.line-clamp-1, .line-clamp-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.line-clamp-1 { -webkit-line-clamp: 1; }
+.line-clamp-2 { -webkit-line-clamp: 2; }

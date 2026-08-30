@@ -1,161 +1,63 @@
 import { Router } from 'express';
-import { getMarketOverview, getQuote, getMultipleQuotes, getQuotableSymbols, searchSymbols as searchYahoo } from '../services/yahooFinance.js';
-import { getFinnhubQuote, getMarketOverview as getFinnhubMarketOverview, searchSymbols as searchFinnhub } from '../services/finnhub.js';
-import { getQuote as getAvQuote } from '../services/alphaVantage.js';
-import { getHistoricalSeries, quoteFromDisk as historyQuoteFromDisk } from '../services/historyProvider.js';
-import { getIntraday } from '../services/twelveData.js';
-import { enrichSearchResult, pickBestSearchMatch, rankSearchResult } from '../services/symbolFormat.js';
-
-const INTRADAY_INTERVALS = new Set(['1min', '5min', '15min', '30min', '45min', '1h', '2h', '4h']);
+import {
+  getQuote,
+  getQuotes,
+  getMarket,
+  getHistorical,
+  getHistoricalBatch,
+  search,
+  resolveSymbol
+} from '../providers/marketData.js';
+import { asyncHandler, AppError, ok } from '../lib/errors.js';
+import { requireTicker, parseSymbols, clampInt } from '../lib/validate.js';
 
 const router = Router();
 
-async function mergeSearchResults(q) {
-  const [yahoo, finnhub] = await Promise.all([
-    searchYahoo(q).catch(() => []),
-    searchFinnhub(q).catch(() => [])
-  ]);
-  const seen = new Set();
-  const data = [];
-  for (const r of [...yahoo, ...finnhub]) {
-    if (!r?.symbol || seen.has(r.symbol)) continue;
-    seen.add(r.symbol);
-    data.push(enrichSearchResult(r));
-  }
-  data.sort((a, b) => rankSearchResult(q, b) - rankSearchResult(q, a));
-  return data;
-}
+router.get('/watchlist', asyncHandler(async (req, res) => {
+  const symbols = parseSymbols(req.query.symbols, { max: 60 });
+  if (!symbols.length) return ok(res, []);
+  const data = await getQuotes(symbols);
+  if (!data.length) throw new AppError('Quote data unavailable', 503, 'NO_QUOTES');
+  return ok(res, data);
+}));
 
-/** Keep only symbols we can actually quote (disk cache or live fetch). */
-async function filterQuotableResults(results, limit = 15) {
-  const candidates = results.slice(0, 25);
-  const quotable = await getQuotableSymbols(candidates.map(r => r.symbol));
-  return candidates.filter(r => quotable.has(r.symbol)).slice(0, limit);
-}
+router.get('/market', asyncHandler(async (req, res) => {
+  const data = await getMarket();
+  if (!data.length) throw new AppError('Market data unavailable', 503, 'NO_MARKET');
+  return ok(res, data);
+}));
 
-async function quoteFromHistory(symbol) {
-  const fromDisk = historyQuoteFromDisk(symbol);
-  if (fromDisk) return fromDisk;
-  const hist = await getHistoricalSeries(symbol, 5, 7 * 24 * 3600_000).catch(() => null);
-  if (!hist?.length) return null;
-  const last = hist[hist.length - 1];
-  const prev = hist.length > 1 ? hist[hist.length - 2] : last;
-  const change = last.close - prev.close;
-  return {
-    symbol,
-    price: last.close,
-    change,
-    changePct: prev.close ? (change / prev.close) * 100 : 0,
-    previousClose: prev.close,
-    open: last.open,
-    dayHigh: last.high,
-    dayLow: last.low,
-    volume: last.volume,
-    stale: true
-  };
-}
+router.get('/quote/:symbol', asyncHandler(async (req, res) => {
+  const symbol = requireTicker(req.params.symbol);
+  const data = await getQuote(symbol);
+  if (!data) throw new AppError(`Quote unavailable for ${symbol}`, 503, 'NO_QUOTE');
+  return ok(res, data);
+}));
 
-router.get('/watchlist', async (req, res) => {
-  const symbols = (req.query.symbols ?? '')
-    .split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-  if (!symbols.length) return res.json({ success: true, data: [] });
-  try {
-    let data = await getMultipleQuotes(symbols);
+router.get('/historical-batch', asyncHandler(async (req, res) => {
+  const symbols = parseSymbols(req.query.symbols, { max: 24 });
+  const days = clampInt(req.query.days, { min: 5, max: 200, fallback: 63 });
+  if (!symbols.length) return ok(res, {});
+  return ok(res, await getHistoricalBatch(symbols, days));
+}));
 
-    // Fill any symbols Yahoo missed (rate limits, etc.)
-    const have = new Set((data || []).map(q => q.symbol));
-    const missing = symbols.filter(s => !have.has(s));
-    if (missing.length) {
-      const extras = await Promise.all(
-        missing.map(async sym => {
-          const q = await getQuote(sym).catch(() => null);
-          return q || quoteFromHistory(sym);
-        })
-      );
-      data = [...(data || []), ...extras.filter(Boolean)];
-    }
+router.get('/historical/:symbol', asyncHandler(async (req, res) => {
+  const symbol = requireTicker(req.params.symbol);
+  const interval = String(req.query.interval || '1day');
+  const days = clampInt(req.query.days, { min: 1, max: 5000, fallback: interval === '1day' ? 100 : 500 });
+  const data = await getHistorical(symbol, { days, interval });
+  if (!data?.length) throw new AppError(`Historical data unavailable for ${symbol}`, 503, 'NO_HISTORY');
+  return ok(res, data, { interval });
+}));
 
-    if (data?.length) return res.json({ success: true, data });
-    return res.status(503).json({ success: false, error: 'Quote data unavailable' });
-  } catch {
-    return res.status(503).json({ success: false, error: 'Quote data unavailable' });
-  }
-});
+router.get('/search', asyncHandler(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  return ok(res, await search(q, 15));
+}));
 
-router.get('/market', async (req, res) => {
-  try {
-    let data = await getMarketOverview();
-    if (!data?.length) data = await getFinnhubMarketOverview();
-    if (data?.length) return res.json({ success: true, data });
-    return res.status(503).json({ success: false, error: 'Market data unavailable' });
-  } catch {
-    return res.status(503).json({ success: false, error: 'Market data unavailable' });
-  }
-});
-
-router.get('/quote/:symbol', async (req, res) => {
-  const symbol = req.params.symbol.toUpperCase();
-  try {
-    let data = await getQuote(symbol);
-    // Finnhub free tier is US-only; only use as fallback for plain US tickers
-    if (!data && !symbol.includes('.')) data = await getFinnhubQuote(symbol);
-    if (!data) data = await getAvQuote(symbol);
-    if (!data) data = await quoteFromHistory(symbol);
-    if (data) return res.json({ success: true, data });
-    return res.status(503).json({ success: false, error: `Quote unavailable for ${symbol}` });
-  } catch {
-    return res.status(503).json({ success: false, error: `Quote unavailable for ${symbol}` });
-  }
-});
-
-router.get('/historical/:symbol', async (req, res) => {
-  const symbol = decodeURIComponent(req.params.symbol).toUpperCase();
-  const interval = req.query.interval || '1day';
-  try {
-    let data;
-    if (INTRADAY_INTERVALS.has(interval)) {
-      const bars = Math.min(2000, parseInt(req.query.days || '500', 10));
-      data = await getIntraday(symbol, interval, bars);
-    } else {
-      const days = Math.min(5000, parseInt(req.query.days || '100', 10));
-      // Accept day-old cache on server — avoids 503 when Yahoo rate-limits Railway IPs
-      data = await getHistoricalSeries(symbol, days, 24 * 3600_000);
-      if (!data?.length) {
-        const { getHistorical: getStooqHist } = await import('../services/stooq.js');
-        data = await getStooqHist(symbol, days).catch(() => null);
-      }
-    }
-    if (data?.length) return res.json({ success: true, data, interval });
-    return res.status(503).json({ success: false, error: `Historical data unavailable for ${symbol}` });
-  } catch {
-    return res.status(503).json({ success: false, error: `Historical data unavailable for ${symbol}` });
-  }
-});
-
-router.get('/search', async (req, res) => {
-  const { q } = req.query;
-  if (!q) return res.json({ success: true, data: [] });
-  try {
-    const data = (await mergeSearchResults(q)).slice(0, 15);
-    res.json({ success: true, data });
-  } catch {
-    res.json({ success: true, data: [] });
-  }
-});
-
-router.get('/resolve', async (req, res) => {
-  const { q } = req.query;
-  if (!q?.trim()) return res.json({ success: true, data: null });
-  const input = q.trim().toUpperCase();
-  try {
-    const merged = await mergeSearchResults(q);
-    const results = await filterQuotableResults(merged, 20);
-    const symbol = pickBestSearchMatch(input, results) || results.find(r => r.symbol === input)?.symbol || null;
-    const match = symbol ? results.find(r => r.symbol === symbol) || null : null;
-    res.json({ success: true, data: { symbol, match, alternatives: results.slice(0, 8) } });
-  } catch {
-    res.json({ success: true, data: { symbol: null, match: null, alternatives: [] } });
-  }
-});
+router.get('/resolve', asyncHandler(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  return ok(res, await resolveSymbol(q));
+}));
 
 export default router;

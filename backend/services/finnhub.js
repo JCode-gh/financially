@@ -58,7 +58,7 @@ export async function getStockNews(ticker) {
       url: n.url,
       image: n.image,
       publishedAt: new Date(n.datetime * 1000).toISOString(),
-      related: ticker
+      related: n.related || ''
     }));
   });
 }

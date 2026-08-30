@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { newsApi } from '../services/api.js';
+import { t } from '../i18n/index.js';
 
 export const useNewsStore = defineStore('news', () => {
   const articles = ref([]);
@@ -8,6 +9,8 @@ export const useNewsStore = defineStore('news', () => {
   const marketSentiment = ref({ score: 0, label: 'neutral' });
   const stockSentiment = ref({ score: 0, label: 'neutral' });
   const loading = ref({ market: false, stock: false });
+  const error = ref(null);
+  const lastUpdated = ref(null);
   const activeFilter = ref('all'); // 'all' | 'bullish' | 'bearish' | 'neutral'
 
   const filteredArticles = computed(() => {
@@ -23,14 +26,17 @@ export const useNewsStore = defineStore('news', () => {
     return counts;
   });
 
-  async function fetchMarketNews() {
+  async function fetchMarketNews(symbols, names) {
     loading.value.market = true;
     try {
-      const res = await newsApi.market();
+      const res = await newsApi.market(symbols, names);
       articles.value = res.data.data || [];
       marketSentiment.value = res.data.marketSentiment || { score: 0, label: 'neutral' };
-    } catch { /* silently fail, show cached if any */ }
-    finally { loading.value.market = false; }
+      lastUpdated.value = new Date();
+      error.value = null;
+    } catch (e) {
+      error.value = e.normalized?.message || t('errors.news');
+    } finally { loading.value.market = false; }
   }
 
   async function fetchStockNews(symbol, name) {
@@ -44,12 +50,11 @@ export const useNewsStore = defineStore('news', () => {
       return;
     }
     loading.value.stock = true;
-    stockArticles.value = [];
     try {
       const res = await newsApi.stock(symbol, name);
       stockArticles.value = res.data.data || [];
       stockSentiment.value = res.data.stockSentiment || { score: 0, label: 'neutral' };
-    } catch { stockArticles.value = []; }
+    } catch { /* keep previous stock articles */ }
     finally { loading.value.stock = false; }
   }
 
@@ -57,7 +62,7 @@ export const useNewsStore = defineStore('news', () => {
 
   return {
     articles, stockArticles, marketSentiment, stockSentiment,
-    loading, activeFilter, filteredArticles, sentimentCounts,
+    loading, error, lastUpdated, activeFilter, filteredArticles, sentimentCounts,
     fetchMarketNews, fetchStockNews, setFilter
   };
 });

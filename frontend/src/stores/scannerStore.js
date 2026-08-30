@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { scannerApi } from '../services/api.js';
+import { t } from '../i18n/index.js';
 
 export const useScannerStore = defineStore('scanner', () => {
   const opportunities = ref([]);
@@ -9,6 +10,7 @@ export const useScannerStore = defineStore('scanner', () => {
   const alerts = ref([]);
   const earnings = ref({});
   const loading = ref({ scan: false, running: false, alerts: false });
+  const error = ref(null);
 
   const actionable = computed(() => opportunities.value.filter(o => o.actionable));
   const watchlist = computed(() => opportunities.value.filter(o => o.quality === 'watch'));
@@ -21,9 +23,9 @@ export const useScannerStore = defineStore('scanner', () => {
     const iso = String(runAt.value).includes('T') ? runAt.value : runAt.value.replace(' ', 'T') + 'Z';
     const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
     if (isNaN(mins)) return null;
-    if (mins < 1) return 'just now';
-    if (mins < 60) return `${mins}m ago`;
-    return `${Math.floor(mins / 60)}h ago`;
+    if (mins < 1) return t('time.justNow');
+    if (mins < 60) return t('time.minutesAgo', { n: mins });
+    return t('time.hoursAgo', { n: Math.floor(mins / 60) });
   });
 
   async function fetchLatest() {
@@ -34,8 +36,9 @@ export const useScannerStore = defineStore('scanner', () => {
       opportunities.value = data.results || [];
       runAt.value = data.runAt;
       meta.value = data.meta || null;
-    } catch { /* keep previous */ }
-    finally { loading.value.scan = false; }
+    } catch (e) {
+      error.value = e.normalized?.message || t('errors.loadScan');
+    } finally { loading.value.scan = false; }
   }
 
   async function runScan() {
@@ -48,8 +51,10 @@ export const useScannerStore = defineStore('scanner', () => {
       runAt.value = data.runAt;
       meta.value = data.meta || null;
       await fetchAlerts();
-    } catch { /* keep previous */ }
-    finally { loading.value.running = false; }
+      error.value = null;
+    } catch (e) {
+      error.value = e.normalized?.message || t('errors.scanFailed');
+    } finally { loading.value.running = false; }
   }
 
   async function fetchAlerts() {
@@ -80,7 +85,7 @@ export const useScannerStore = defineStore('scanner', () => {
   }
 
   return {
-    opportunities, runAt, meta, alerts, earnings, loading,
+    opportunities, runAt, meta, alerts, earnings, loading, error,
     actionable, watchlist, buys, sells, lastScanAgo,
     fetchLatest, runScan, fetchAlerts, fetchEarnings, init, refresh
   };

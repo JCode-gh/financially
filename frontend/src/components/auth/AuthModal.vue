@@ -6,7 +6,7 @@
   >
     <div class="bg-surface-100 border border-surface-300 rounded-lg shadow-xl w-full max-w-sm">
       <div class="flex items-center justify-between px-4 py-3 border-b border-surface-300">
-        <h2 class="text-sm font-medium text-white">{{ mode === 'login' ? 'Sign in' : 'Create account' }}</h2>
+        <h2 class="text-sm font-medium text-white">{{ mode === 'login' ? $t('auth.signIn') : $t('auth.createAccount') }}</h2>
         <button @click="close" class="text-gray-500 hover:text-gray-300 p-1">
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -17,11 +17,11 @@
 
       <form @submit.prevent="submit" class="p-4 space-y-3">
         <div v-if="!authStore.firebaseEnabled" class="text-xs text-neutral font-mono">
-          Firebase is not configured. Add keys to <code class="text-accent">frontend/.env</code> (see <code class="text-accent">frontend/.env.example</code>).
+          {{ $t('auth.firebaseMissing') }}
         </div>
 
         <div v-if="mode === 'register'">
-          <label class="text-xs text-gray-500 font-mono block mb-1">Name (optional)</label>
+          <label class="text-xs text-gray-500 font-mono block mb-1">{{ $t('auth.nameOptional') }}</label>
           <input
             v-model="displayName"
             type="text"
@@ -31,7 +31,7 @@
         </div>
 
         <div>
-          <label class="text-xs text-gray-500 font-mono block mb-1">Email</label>
+          <label class="text-xs text-gray-500 font-mono block mb-1">{{ $t('auth.email') }}</label>
           <input
             v-model="email"
             type="email"
@@ -42,7 +42,7 @@
         </div>
 
         <div>
-          <label class="text-xs text-gray-500 font-mono block mb-1">Password</label>
+          <label class="text-xs text-gray-500 font-mono block mb-1">{{ $t('auth.password') }}</label>
           <input
             v-model="password"
             type="password"
@@ -62,17 +62,17 @@
           :disabled="submitting || !authStore.firebaseEnabled"
           class="w-full py-2 rounded text-sm font-mono bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-50 transition-colors"
         >
-          {{ submitting ? 'Please wait…' : (mode === 'login' ? 'Sign in' : 'Register') }}
+          {{ submitting ? $t('auth.wait') : (mode === 'login' ? $t('auth.signIn') : $t('auth.register')) }}
         </button>
 
         <p class="text-xs text-gray-500 text-center font-mono">
           <template v-if="mode === 'login'">
-            No account?
-            <button type="button" @click="switchMode('register')" class="text-accent hover:text-accent/70">Register</button>
+            {{ $t('auth.noAccount') }}
+            <button type="button" @click="switchMode('register')" class="text-accent hover:text-accent/70">{{ $t('auth.register') }}</button>
           </template>
           <template v-else>
-            Already have an account?
-            <button type="button" @click="switchMode('login')" class="text-accent hover:text-accent/70">Sign in</button>
+            {{ $t('auth.haveAccount') }}
+            <button type="button" @click="switchMode('login')" class="text-accent hover:text-accent/70">{{ $t('auth.signIn') }}</button>
           </template>
         </p>
       </form>

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon --ext js --watch app.js --watch server.js --watch config.js --watch routes --watch services --watch providers --watch lib --watch jobs --watch models --watch db --ignore data --ignore node_modules server.js"
   },
   "dependencies": {
     "axios": "^1.7.2",

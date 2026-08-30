@@ -52,7 +52,9 @@ const BULLISH_WORDS = new Set([
   'positive', 'upbeat', 'optimistic', 'expansion', 'recovery', 'rebound', 'rebounds',
   'breakthrough', 'innovation', 'dividend', 'approve', 'approved', 'win', 'won', 'wins',
   'profitable', 'surplus', 'boost', 'boosted', 'boosts', 'upside', 'record', 'high',
-  'milestone', 'robust', 'resilient', 'outpace', 'thriving', 'demand'
+  'milestone', 'robust', 'resilient', 'outpace', 'thriving', 'demand',
+  'winst', 'stijgt', 'steeg', 'recordwinst', 'koersdoel', 'verhoogt', 'groei',
+  'hausse', 'bénéfice', 'gewinn', 'steigt'
 ]);
 
 const BEARISH_WORDS = new Set([
@@ -65,7 +67,9 @@ const BEARISH_WORDS = new Set([
   'uncertainty', 'lawsuit', 'investigation', 'fraud', 'bankruptcy', 'default', 'fine',
   'penalty', 'probe', 'recall', 'shortage', 'deficit', 'warning', 'warns', 'warned',
   'cautious', 'headwinds', 'slowdown', 'disappointing', 'struggles', 'struggling',
-  'tariff', 'tariffs', 'inflation', 'low', 'fears', 'fear', 'worries', 'turmoil'
+  'tariff', 'tariffs', 'inflation', 'low', 'fears', 'fear', 'worries', 'turmoil',
+  'verlies', 'daalt', 'daalde', 'winstwaarschuwing', 'verlaagt',
+  'baisse', 'perte', 'fällt', 'verlust'
 ]);
 
 // Intensifiers that boost the weight of the next sentiment word
@@ -85,7 +89,8 @@ const SOURCE_WEIGHTS = [
   [/reuters/i, 1.3], [/bloomberg/i, 1.3], [/wall street journal|wsj/i, 1.25],
   [/financial times|ft\.com/i, 1.25], [/cnbc/i, 1.15], [/barron/i, 1.15],
   [/marketwatch/i, 1.1], [/associated press|ap news/i, 1.15], [/forbes/i, 1.0],
-  [/yahoo/i, 1.0], [/investor'?s business daily|ibd/i, 1.05], [/benzinga/i, 0.9],
+  [/yahoo/i, 1.0], [/de tijd|l['’]echo|trends\.be|de standaard/i, 1.15],
+  [/investor'?s business daily|ibd/i, 1.05], [/benzinga/i, 0.9],
   [/seeking ?alpha/i, 0.9], [/motley ?fool/i, 0.75], [/zacks/i, 0.85],
   [/insidermonkey|gurufocus|simplywall/i, 0.7]
 ];

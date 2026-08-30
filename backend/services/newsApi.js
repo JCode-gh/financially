@@ -1,5 +1,6 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { companySearchTerms } from '../lib/articles.js';
 dotenv.config();
 
 const KEY = process.env.NEWS_API_KEY || '';
@@ -16,7 +17,7 @@ async function get(path, params = {}) {
   if (!KEY) return null;
   try {
     const res = await axios.get(`${BASE}${path}`, {
-      params: { ...params, apiKey: KEY, language: 'en' },
+      params: { apiKey: KEY, ...params },
       timeout: 8000
     });
     return res.data;
@@ -30,6 +31,7 @@ export async function getTopFinancialNews() {
   return cached('newsapi_top', 1800_000, async () => {
     const data = await get('/top-headlines', {
       category: 'business',
+      language: 'en',
       pageSize: 30
     });
     if (!data || !data.articles) return [];
@@ -58,16 +60,20 @@ function looksFinancial(article, ticker, companyName) {
   const sym = ticker.toLowerCase();
   if (text.includes(sym)) return true;
   if (companyName && text.includes(companyName.toLowerCase())) return true;
+  const base = ticker.split(/[.-]/)[0].toLowerCase();
+  if (base.length >= 3 && new RegExp(`(?:^|[^a-z0-9])${base}(?:[^a-z0-9]|$)`).test(text)) return true;
 
-  return /\b(stock|stocks|shares|earnings|revenue|market|investor|trading|ipo|dividend|quarter|analyst|price target|wall street|nasdaq|nyse)\b/i.test(text);
+  return /\b(stock|stocks|shares|earnings|revenue|market|investor|trading|ipo|dividend|quarter|analyst|price target|wall street|nasdaq|nyse|aandeel|aandelen|beurs|koers|winst|omzet|action|actions|bourse|aktie|börse)\b/i.test(text);
 }
 
 export async function searchStockNews(ticker, companyName) {
   const sym = ticker.toUpperCase();
-  const namePart = companyName ? `"${companyName}" OR ` : '';
-  const q = `(${namePart}"${sym}") AND (stock OR shares OR earnings OR trading OR market OR investor)`;
-  return cached(`newsapi_${sym}`, 1800_000, async () => {
-    const from = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+  const terms = companySearchTerms(sym, companyName);
+  const q = terms.length
+    ? terms.map(t => `"${t}"`).join(' OR ')
+    : `"${sym}"`;
+  return cached(`newsapi_${sym}_${q}`, 1800_000, async () => {
+    const from = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0];
     const data = await get('/everything', {
       q,
       from,
@@ -78,15 +84,22 @@ export async function searchStockNews(ticker, companyName) {
     return data.articles
       .filter(a => a.title && !a.title.includes('[Removed]'))
       .filter(a => looksFinancial(a, sym, companyName))
-      .map(a => ({
-        id: a.url,
-        headline: a.title,
-        summary: a.description || '',
-        source: a.source?.name || 'NewsAPI',
-        url: a.url,
-        image: a.urlToImage,
-        publishedAt: a.publishedAt,
-        related: sym
-      }));
+      .map(a => {
+        const text = `${a.title || ''} ${a.description || ''}`.toLowerCase();
+        const named = text.includes(sym.toLowerCase()) ||
+          (companyName && text.includes(companyName.toLowerCase())) ||
+          terms.some(t => text.includes(String(t).toLowerCase()));
+        return {
+          id: a.url,
+          headline: a.title,
+          summary: a.description || '',
+          source: a.source?.name || 'NewsAPI',
+          url: a.url,
+          image: a.urlToImage,
+          publishedAt: a.publishedAt,
+          related: named ? sym : '',
+          trustedTicker: named ? sym : undefined
+        };
+      });
   });
 }

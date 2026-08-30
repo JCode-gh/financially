@@ -100,30 +100,28 @@ function isInternationalSymbol(symbol) {
   return /^[A-Z0-9-]+\.[A-Z]{1,4}$/.test(symbol);
 }
 
+async function firstSeries(fns) {
+  for (const fn of fns) {
+    const data = await fn().catch(() => null);
+    if (data?.length) return data;
+  }
+  return null;
+}
+
 async function fetchDeepest(symbol) {
   const intl = isInternationalSymbol(symbol);
-
   if (intl) {
-    const [yahoo, stooq] = await Promise.all([
-      getYahoo(symbol, MAX_DAYS).catch(() => null),
-      getStooq(symbol, MAX_DAYS).catch(() => null)
+    return firstSeries([
+      () => getYahoo(symbol, MAX_DAYS),
+      () => getStooq(symbol, MAX_DAYS)
     ]);
-    if (yahoo?.length) return yahoo;
-    if (stooq?.length) return stooq;
-    return null;
   }
-
-  const [twelve, yahoo, stooq, alpha] = await Promise.all([
-    getTwelve(symbol, MAX_DAYS).catch(() => null),
-    getYahoo(symbol, MAX_DAYS).catch(() => null),
-    getStooq(symbol, MAX_DAYS).catch(() => null),
-    getAlpha(symbol, MAX_DAYS).catch(() => null)
+  return firstSeries([
+    () => getTwelve(symbol, MAX_DAYS),
+    () => getYahoo(symbol, MAX_DAYS),
+    () => getStooq(symbol, MAX_DAYS),
+    () => getAlpha(symbol, MAX_DAYS)
   ]);
-  return twelve?.length ? twelve
-    : yahoo?.length ? yahoo
-    : stooq?.length ? stooq
-    : alpha?.length ? alpha
-    : null;
 }
 
 /**

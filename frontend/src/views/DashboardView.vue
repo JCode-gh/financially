@@ -1,118 +1,83 @@
 <template>
-  <div class="flex flex-col h-full overflow-hidden bg-surface">
-    <!-- Market indices ticker -->
-    <MarketTicker />
+  <div class="flex flex-col h-full bg-surface overflow-y-auto lg:overflow-hidden">
+    <div class="flex-shrink-0 px-2.5 pt-2.5">
+      <StockVerdict :symbol="selectedSymbol" :loading="predictionStore.generating" variant="strip" />
+    </div>
 
-    <!-- Main grid -->
-    <div class="flex-1 dash-grid min-h-0">
-
-      <!-- Left: News Feed -->
+    <div class="flex-1 dash-grid min-h-0" :class="ui.isSimple ? 'is-simple' : 'is-pro'">
       <div class="news-area min-h-0 overflow-hidden">
         <NewsFeed />
       </div>
 
-      <!-- Center top: Stock Chart -->
       <div class="chart-area min-h-0 overflow-hidden">
         <StockChart :symbol="selectedSymbol" />
       </div>
 
-      <!-- Right: Watchlist + Alerts -->
-      <div class="watch-area min-h-0 overflow-hidden flex flex-col gap-1.5">
-        <div class="flex-[3] min-h-0">
-          <WatchList />
-        </div>
-        <div class="flex-[2] min-h-0">
-          <AlertsPanel />
-        </div>
+      <div class="watch-area min-h-0 overflow-hidden">
+        <WatchList />
       </div>
 
-      <!-- Center bottom: Opportunities (auto-scanner) + Predictions -->
-      <div class="bottom-area grid min-h-0 overflow-hidden">
+      <div v-if="ui.isPro" class="bottom-area grid min-h-0 overflow-hidden">
         <OpportunitiesPanel />
         <PredictionPanel />
       </div>
     </div>
 
-    <!-- No backend notice -->
-    <div v-if="backendDown" class="fixed bottom-4 right-4 bg-surface-100 border border-bear/40 text-bear text-xs font-mono px-4 py-3 rounded shadow-xl max-w-xs">
-      <div class="font-semibold mb-1">Backend not connected</div>
-      <div class="text-gray-400">Run <code class="text-accent">cd backend && npm run dev</code> to start the API server.</div>
+    <div v-if="ui.backendDown" class="fixed bottom-20 lg:bottom-12 right-3 lg:right-4 bg-surface-100 border border-bear/40 text-bear text-xs font-mono px-4 py-3 rounded shadow-xl max-w-[min(20rem,calc(100vw-1.5rem))] z-40">
+      <div class="font-semibold mb-1">{{ $t('dashboard.backendDown') }}</div>
+      <div class="text-gray-400">{{ $t('dashboard.backendHint', { cmd: 'cd backend && npm run dev' }) }}</div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, watch } from 'vue';
 import { useMarketStore } from '../stores/marketStore.js';
 import { useNewsStore } from '../stores/newsStore.js';
 import { usePredictionStore } from '../stores/predictionStore.js';
 import { useScannerStore } from '../stores/scannerStore.js';
-import { healthApi } from '../services/api.js';
-import MarketTicker from '../components/layout/MarketTicker.vue';
+import { useUiStore } from '../stores/uiStore.js';
 import NewsFeed from '../components/news/NewsFeed.vue';
 import StockChart from '../components/stocks/StockChart.vue';
 import WatchList from '../components/stocks/WatchList.vue';
 import OpportunitiesPanel from '../components/scanner/OpportunitiesPanel.vue';
-import AlertsPanel from '../components/scanner/AlertsPanel.vue';
 import PredictionPanel from '../components/predictions/PredictionPanel.vue';
+import StockVerdict from '../components/predictions/StockVerdict.vue';
 
 const marketStore = useMarketStore();
 const newsStore = useNewsStore();
 const predictionStore = usePredictionStore();
 const scannerStore = useScannerStore();
+const ui = useUiStore();
 
 const selectedSymbol = computed(() => marketStore.selectedSymbol);
-const backendDown = ref(false);
-let refreshInterval;
 let scannerInterval;
 
-async function checkBackend() {
-  try {
-    await healthApi.check();
-    backendDown.value = false;
-    return true;
-  } catch {
-    backendDown.value = true;
-    return false;
+async function init() {
+  if (ui.backendDown) return;
+
+  await Promise.allSettled([
+    predictionStore.fetchAccuracy()
+  ]);
+  scannerStore.init();
+
+  const first = marketStore.watchlistSymbols[0] || 'SPY';
+  if (!marketStore.selectedSymbol) {
+    await marketStore.selectSymbol(first);
+  } else if (marketStore.selectedSymbol) {
+    try { await predictionStore.generateForSymbol(marketStore.selectedSymbol, marketStore.selectedQuote?.name); } catch { /* ignore */ }
   }
 }
 
-async function init() {
-  const alive = await checkBackend();
-  if (!alive) return;
-
-  await Promise.all([
-    marketStore.init(),
-    newsStore.fetchMarketNews(),
-    predictionStore.fetchAccuracy()
-  ]);
-
-  // Auto-scanner results, alerts, earnings calendar — the board fills itself
-  scannerStore.init();
-
-  // Open the live trade stream (chart + prices update in real time)
-  marketStore.connectLive();
-
-  // Auto-run the model for the default symbol (trade plan, targets, reasons)
-  try { await predictionStore.generateForSymbol(selectedSymbol.value); } catch { /* ignore */ }
-}
-
-// Re-run predictions whenever the selected symbol changes
 watch(selectedSymbol, async (sym) => {
   if (!sym) return;
-  try { await predictionStore.generateForSymbol(sym); } catch { /* ignore */ }
+  const name = marketStore.selectedQuote?.name;
+  newsStore.fetchStockNews(sym, name);
+  try { await predictionStore.generateForSymbol(sym, name); } catch { /* ignore */ }
 });
 
 onMounted(() => {
   init();
-  // Refresh market data every 60 seconds
-  refreshInterval = setInterval(async () => {
-    await Promise.allSettled([
-      marketStore.fetchMarket(),
-      marketStore.fetchWatchlist()
-    ]);
-  }, 60_000);
-  // Pull fresh scan + alerts every 5 minutes (backend rescans itself on cron)
   scannerInterval = setInterval(() => {
     scannerStore.refresh();
     predictionStore.fetchAccuracy();
@@ -120,52 +85,62 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
-  clearInterval(refreshInterval);
   clearInterval(scannerInterval);
-  marketStore.disconnectLive();
 });
 </script>
 
 <style scoped>
-/* Responsive dashboard grid: side panels shrink via minmax (no clipping),
-   the chart takes the remaining width, and the bottom row gets real height
-   for the opportunities list + trade plan. */
 .dash-grid {
   display: grid;
-  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) minmax(220px, 280px);
-  grid-template-rows: minmax(0, 1fr) minmax(240px, 300px);
-  gap: 6px;
-  padding: 6px;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr) minmax(230px, 300px);
+  grid-template-rows: minmax(0, 1fr) minmax(200px, 240px);
+  gap: 10px;
+  padding: 10px;
 }
 .news-area  { grid-column: 1; grid-row: 1 / span 2; }
 .chart-area { grid-column: 2; grid-row: 1; }
 .watch-area { grid-column: 3; grid-row: 1 / span 2; }
+.dash-grid.is-simple .chart-area { grid-row: 1 / span 2; }
+.dash-grid.is-simple {
+  grid-template-rows: minmax(0, 1fr);
+}
 .bottom-area {
   grid-column: 2;
   grid-row: 2;
-  grid-template-columns: minmax(0, 1fr) minmax(250px, 330px);
-  gap: 6px;
+  grid-template-columns: minmax(0, 1.1fr) minmax(240px, 320px);
+  gap: 10px;
 }
 
-/* Tighter side columns on mid widths */
 @media (max-width: 1280px) {
-  .dash-grid { grid-template-columns: minmax(180px, 215px) minmax(0, 1fr) minmax(195px, 240px); }
+  .dash-grid { grid-template-columns: minmax(200px, 230px) minmax(0, 1fr) minmax(210px, 250px); }
 }
 
-/* Stack vertically and let the dashboard scroll on narrow windows */
 @media (max-width: 1024px) {
   .dash-grid {
-    grid-template-columns: 1fr;
-    grid-template-rows: none;
-    grid-auto-rows: minmax(280px, auto);
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+    min-height: unset;
+    padding: 8px;
+    gap: 8px;
   }
-  .news-area, .chart-area, .watch-area, .bottom-area {
-    grid-column: 1;
-    grid-row: auto;
+  .chart-area { order: 1; height: 300px; flex-shrink: 0; }
+  .watch-area { order: 2; height: 220px; flex-shrink: 0; }
+  .news-area { order: 3; height: 380px; flex-shrink: 0; }
+  .bottom-area {
+    order: 4;
+    display: flex;
+    flex-direction: column;
+    min-height: 240px;
+    height: auto;
+    grid-template-columns: none;
   }
-  .chart-area { min-height: 360px; }
-  .watch-area { min-height: 480px; }
-  .bottom-area { grid-template-columns: 1fr; grid-auto-rows: minmax(260px, auto); }
+  .bottom-area > * { min-height: 240px; }
+}
+
+@media (max-width: 480px) {
+  .chart-area { height: 260px; }
+  .watch-area { height: 200px; }
+  .news-area { height: 360px; }
 }
 </style>

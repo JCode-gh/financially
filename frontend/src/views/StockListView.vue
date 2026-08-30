@@ -2,8 +2,8 @@
   <div class="flex flex-col h-full overflow-hidden bg-surface">
     <WatchlistTabs />
 
-    <div class="flex items-center justify-between px-4 py-3 border-b border-surface-300 flex-shrink-0 gap-3">
-      <h1 class="text-sm font-medium text-gray-300">{{ activeListName }}</h1>
+    <div class="flex items-center justify-between px-3 sm:px-4 py-3 border-b border-surface-300 flex-shrink-0 gap-2 sm:gap-3">
+      <h1 class="text-sm font-medium text-gray-300 truncate min-w-0">{{ activeListName }}</h1>
       <div class="flex items-center gap-2 flex-shrink-0">
         <div class="flex items-center rounded border border-surface-300 overflow-hidden">
           <button
@@ -11,21 +11,21 @@
             class="text-xs px-2.5 py-1 font-mono transition-colors"
             :class="viewMode === 'list' ? 'bg-accent/20 text-accent' : 'text-gray-500 hover:text-gray-300'"
           >
-            List
+            {{ $t('watch.list') }}
           </button>
           <button
             @click="setViewMode('charts')"
             class="text-xs px-2.5 py-1 font-mono transition-colors border-l border-surface-300"
             :class="viewMode === 'charts' ? 'bg-accent/20 text-accent' : 'text-gray-500 hover:text-gray-300'"
           >
-            Charts
+            {{ $t('watch.charts') }}
           </button>
         </div>
         <button
           @click="showAdd = !showAdd"
           class="text-xs text-accent hover:text-accent/70 font-mono"
         >
-          + Add stock
+          {{ $t('watch.addStock') }}
         </button>
       </div>
     </div>
@@ -38,7 +38,7 @@
             @input="onAddSearch"
             @keydown.enter="addSymbol"
             @keydown.escape="closeAdd"
-            placeholder="Search by name or ticker (e.g. WEBN, KBC Ancora)"
+            :placeholder="$t('watch.searchPlaceholder')"
             class="w-full bg-surface-200 border border-surface-300 rounded px-3 py-2 text-sm font-mono text-gray-200 placeholder-gray-600 focus:outline-none focus:border-accent/50"
             autofocus
           />
@@ -63,7 +63,7 @@
             </button>
           </div>
         </div>
-        <button @click="addSymbol" class="px-4 py-2 text-sm text-accent font-mono hover:text-accent/70 flex-shrink-0">Add</button>
+        <button @click="addSymbol" class="px-4 py-2 text-sm text-accent font-mono hover:text-accent/70 flex-shrink-0">{{ $t('common.add') }}</button>
       </div>
       <p v-if="addError" class="text-xs text-neutral mt-1.5 font-mono">{{ addError }}</p>
     </div>
@@ -74,9 +74,9 @@
       </div>
 
       <div v-else-if="!marketStore.watchlistSymbols.length" class="flex flex-col items-center justify-center h-40 text-gray-500 text-sm gap-2">
-        <span>This list is empty</span>
-        <span class="text-xs text-gray-600">Search or add stocks to {{ activeListName }}</span>
-        <button @click="showAdd = true" class="text-accent text-xs mt-1">+ Add a stock</button>
+        <span>{{ $t('watch.empty') }}</span>
+        <span class="text-xs text-gray-600">{{ $t('watch.emptyHint', { name: activeListName }) }}</span>
+        <button @click="showAdd = true" class="text-accent text-xs mt-1">{{ $t('watch.addAStock') }}</button>
       </div>
 
       <div v-else-if="viewMode === 'charts'" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 p-2">
@@ -85,6 +85,7 @@
           :key="stock.symbol"
           :symbol="stock.symbol"
           :quote="stock"
+          :candles="marketStore.miniHistory[stock.symbol]"
           :stagger-index="idx"
         />
       </div>
@@ -104,16 +105,16 @@
             <div class="text-sm text-gray-500 truncate">{{ stock.name }}</div>
           </div>
           <div class="text-right flex-shrink-0">
-            <div class="font-mono text-base text-gray-200">${{ (stock.price || 0).toFixed(2) }}</div>
+            <div class="font-mono text-base text-gray-200">{{ formatPrice(stock.price, stock.currency) }}</div>
             <div class="font-mono text-sm" :class="(stock.changePct || 0) >= 0 ? 'text-bull' : 'text-bear'">
-              {{ (stock.changePct || 0) >= 0 ? '+' : '' }}{{ (stock.changePct || 0).toFixed(2) }}%
+              {{ formatPct(stock.changePct) }}
             </div>
           </div>
         </button>
         <button
           @click="removeStock(stock.symbol)"
           class="px-4 py-4 text-gray-600 hover:text-bear transition-colors flex-shrink-0"
-          title="Remove from list"
+          :title="$t('common.removeFromList')"
         >
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -124,19 +125,25 @@
       </template>
     </div>
 
-    <div v-if="backendDown" class="px-4 py-3 border-t border-bear/30 bg-bear/5 text-bear text-xs">
-      Backend not connected — run <code class="text-accent">cd backend && npm run dev</code>
+    <div v-if="marketStore.errors.watchlist && !ui.backendDown" class="px-4 py-2 border-t border-neutral/30 text-neutral text-xs font-mono">
+      {{ marketStore.errors.watchlist }}
+    </div>
+    <div v-if="ui.backendDown" class="px-4 py-3 border-t border-bear/30 bg-bear/5 text-bear text-xs">
+      {{ $t('dashboard.backendShort', { cmd: 'cd backend && npm run dev' }) }}
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useMarketStore, STOCKS_VIEW_KEY } from '../stores/marketStore.js';
 import { useAuthStore } from '../stores/authStore.js';
 import { scheduleCloudSync } from '../services/userDataSync.js';
-import { healthApi, stocksApi } from '../services/api.js';
+import { stocksApi } from '../services/api.js';
+import { formatPrice, formatPct } from '../utils/format.js';
+import { useUiStore } from '../stores/uiStore.js';
 import WatchlistTabs from '../components/stocks/WatchlistTabs.vue';
 import MiniStockChart from '../components/stocks/MiniStockChart.vue';
 
@@ -153,18 +160,19 @@ function loadViewMode() {
 const router = useRouter();
 const marketStore = useMarketStore();
 const authStore = useAuthStore();
+const ui = useUiStore();
+const { t } = useI18n();
 
 const showAdd = ref(false);
 const viewMode = ref(loadViewMode());
 const newSymbol = ref('');
 const addSearchResults = ref([]);
 const addError = ref('');
-const backendDown = ref(false);
 let refreshInterval;
 let addSearchTimer;
 
 const watchlist = computed(() => marketStore.watchlistData);
-const activeListName = computed(() => marketStore.activeWatchlist?.name || 'My stocks');
+const activeListName = computed(() => marketStore.activeWatchlist?.name || t('watch.defaultList'));
 const loading = computed(() =>
   viewMode.value === 'list' &&
   marketStore.loading.watchlist &&
@@ -181,6 +189,12 @@ function setViewMode(mode) {
   viewMode.value = mode;
   try { localStorage.setItem(VIEW_MODE_KEY, mode); } catch { /* ignore */ }
   scheduleCloudSync();
+  if (mode === 'charts') loadChartBatch();
+}
+
+async function loadChartBatch() {
+  const symbols = marketStore.watchlistSymbols;
+  if (symbols.length) await marketStore.fetchHistoricalBatch(symbols, 63);
 }
 
 watch(() => authStore.syncing, (syncing, wasSyncing) => {
@@ -224,7 +238,7 @@ async function addToList(raw) {
   addError.value = '';
   const resolved = await marketStore.addToWatchlist(raw);
   if (!resolved) {
-    addError.value = 'Quote data unavailable for this symbol';
+    addError.value = t('watch.quoteUnavailable');
     return null;
   }
   newSymbol.value = '';
@@ -251,16 +265,8 @@ async function addSymbol() {
 }
 
 onMounted(async () => {
-  marketStore.connectLive();
-  const loadPromise = marketStore.init({ watchlistOnly: true });
-
-  try {
-    await Promise.all([healthApi.check(), loadPromise]);
-    backendDown.value = false;
-  } catch {
-    backendDown.value = true;
-  }
-
+  await marketStore.fetchWatchlist();
+  if (viewMode.value === 'charts') await loadChartBatch();
   refreshInterval = setInterval(() => {
     marketStore.fetchWatchlist();
   }, 60_000);
@@ -269,6 +275,5 @@ onMounted(async () => {
 onUnmounted(() => {
   clearInterval(refreshInterval);
   clearTimeout(addSearchTimer);
-  marketStore.disconnectLive();
 });
 </script>

@@ -1,8 +1,8 @@
 <template>
-  <div class="bg-surface-100 border-b border-surface-300 h-8 flex items-center overflow-hidden">
+  <div class="hidden sm:flex bg-surface-100 border-b border-surface-300 h-8 items-center overflow-hidden">
     <div class="flex-shrink-0 px-3 text-xs font-mono font-semibold border-r border-surface-300 h-full flex items-center"
          :class="store.liveConnected ? 'text-accent' : 'text-gray-500'">
-      {{ store.liveConnected ? 'LIVE' : 'IDLE' }}
+      {{ store.liveConnected ? $t('status.live') : $t('status.idle') }}
       <span class="ml-1.5" :class="store.liveConnected ? 'live-dot' : 'idle-dot'"></span>
     </div>
     <div class="ticker-wrap flex-1 relative">
@@ -30,6 +30,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useMarketStore } from '../../stores/marketStore.js';
+import { intlLocale, readLocale } from '../../i18n/locale.js';
 
 const store = useMarketStore();
 const timeStr = ref('');
@@ -49,7 +50,7 @@ function formatPrice(price, type) {
 
 function updateTime() {
   const now = new Date();
-  timeStr.value = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  timeStr.value = now.toLocaleTimeString(intlLocale(readLocale()), { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 onMounted(() => {

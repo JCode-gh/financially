@@ -1,63 +1,52 @@
 <template>
   <div class="card flex flex-col h-full overflow-hidden">
-    <!-- Header -->
-    <div class="flex items-center justify-between px-3 py-2 border-b border-surface-300 flex-shrink-0">
-      <div class="flex items-center gap-2">
-        <span class="label">News Feed</span>
-        <span class="text-xs font-mono px-1.5 py-0.5 rounded" :class="sentimentBadge">
-          {{ marketSentiment.label }}
-        </span>
-      </div>
-      <div class="flex items-center gap-1">
+    <div class="flex items-center gap-2 px-3 py-2.5 border-b border-surface-300 flex-shrink-0 flex-wrap">
+      <span class="label">{{ $t('news.title') }}</span>
+      <span class="text-[11px] font-mono px-1.5 py-0.5 rounded" :class="sentimentBadge">
+        {{ sentimentLabel }}
+      </span>
+      <div class="flex-1"></div>
+      <template v-if="ui.isPro">
         <button
           v-for="f in filters"
           :key="f.value"
           @click="setFilter(f.value)"
-          class="text-xs px-2 py-0.5 rounded font-mono transition-colors"
-          :class="activeFilter === f.value ? f.activeClass : 'text-gray-500 hover:text-gray-300'"
+          class="text-[11px] px-1.5 py-0.5 rounded font-mono transition-colors"
+          :class="activeFilter === f.value ? f.activeClass : 'text-gray-600 hover:text-gray-300'"
         >
           {{ f.label }}
         </button>
-      </div>
+      </template>
     </div>
 
-    <!-- Sentiment bar -->
-    <div class="flex items-center gap-1 px-3 py-1.5 border-b border-surface-300/50 flex-shrink-0 text-xs font-mono">
-      <span class="text-bull">{{ sentimentCounts.bullish }}▲</span>
-      <div class="flex-1 h-1 bg-surface-300 rounded-full overflow-hidden flex">
-        <div class="h-full bg-bull/70 transition-all" :style="{ width: bullPct + '%' }"></div>
-        <div class="h-full bg-surface-300"></div>
-        <div class="h-full bg-bear/70 transition-all" :style="{ width: bearPct + '%' }"></div>
-      </div>
-      <span class="text-bear">▼{{ sentimentCounts.bearish }}</span>
-    </div>
-
-    <!-- Per-stock tab only when a stock is selected -->
-    <div v-if="hasStockTab" class="flex border-b border-surface-300/50 flex-shrink-0">
+    <div class="flex border-b border-surface-300/60 flex-shrink-0">
       <button
-        @click="mode = 'market'"
-        class="flex-1 py-1.5 text-xs font-mono transition-colors"
-        :class="mode === 'market' ? 'text-accent border-b border-accent' : 'text-gray-500 hover:text-gray-300'"
+        @click="mode = 'watch'"
+        class="flex-1 py-2 text-xs font-mono transition-colors"
+        :class="mode === 'watch' ? 'text-accent border-b-2 border-accent' : 'text-gray-500 hover:text-gray-300'"
       >
-        Market
+        {{ $t('news.watchlist') }}
       </button>
       <button
+        v-if="hasStockTab"
         @click="mode = 'stock'"
-        class="flex-1 py-1.5 text-xs font-mono transition-colors"
-        :class="mode === 'stock' ? 'text-accent border-b border-accent' : 'text-gray-500 hover:text-gray-300'"
+        class="flex-1 py-2 text-xs font-mono transition-colors"
+        :class="mode === 'stock' ? 'text-accent border-b-2 border-accent' : 'text-gray-500 hover:text-gray-300'"
       >
         {{ selectedSymbol }}
       </button>
     </div>
 
-    <!-- Articles -->
     <div class="panel-scroll flex-1">
       <div v-if="loading" class="flex items-center justify-center h-20">
         <div class="animate-spin w-5 h-5 border-2 border-accent border-t-transparent rounded-full"></div>
       </div>
-      <div v-else-if="displayArticles.length === 0" class="flex flex-col items-center justify-center h-20 text-gray-500 text-xs">
-        <span>No articles found</span>
-        <span class="text-gray-600 mt-1">Add API keys for more news</span>
+      <div v-else-if="newsStore.error && !displayArticles.length" class="flex items-center justify-center h-20 text-neutral text-xs font-mono px-3 text-center">
+        {{ newsStore.error }}
+      </div>
+      <div v-else-if="displayArticles.length === 0" class="flex items-center justify-center h-20 text-gray-500 text-xs px-3 text-center">
+        <span v-if="mode === 'stock'">{{ $t('news.emptyStock', { symbol: selectedSymbol }) }}</span>
+        <span v-else>{{ $t('news.emptyWatch') }}</span>
       </div>
       <template v-else>
         <NewsCard v-for="article in displayArticles" :key="article.id" :article="article" />
@@ -67,18 +56,20 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useNewsStore } from '../../stores/newsStore.js';
 import { useMarketStore } from '../../stores/marketStore.js';
+import { useUiStore } from '../../stores/uiStore.js';
 import NewsCard from './NewsCard.vue';
 
 const newsStore = useNewsStore();
 const marketStore = useMarketStore();
+const ui = useUiStore();
+const { t } = useI18n();
 
-const mode = ref('market');
+const mode = ref('watch');
 const activeFilter = computed(() => newsStore.activeFilter);
-const marketSentiment = computed(() => newsStore.marketSentiment);
-const sentimentCounts = computed(() => newsStore.sentimentCounts);
 const selectedSymbol = computed(() => marketStore.selectedSymbol);
 const hasStockTab = computed(() => isValidTicker(selectedSymbol.value));
 
@@ -90,53 +81,76 @@ function isValidTicker(symbol) {
 }
 
 const loading = computed(() =>
-  mode.value === 'market' ? newsStore.loading.market : newsStore.loading.stock
+  mode.value === 'stock' ? newsStore.loading.stock : newsStore.loading.market
 );
 
 const displayArticles = computed(() => {
-  const articles = mode.value === 'market' ? newsStore.filteredArticles : newsStore.stockArticles;
-  return articles;
+  const articles = mode.value === 'stock' ? newsStore.stockArticles : newsStore.filteredArticles;
+  if (activeFilter.value === 'all' || mode.value !== 'stock') return articles;
+  return articles.filter(a => a.sentiment?.label === activeFilter.value);
 });
 
-const bullPct = computed(() => {
-  const total = sentimentCounts.value.bullish + sentimentCounts.value.bearish + sentimentCounts.value.neutral;
-  return total > 0 ? (sentimentCounts.value.bullish / total * 100) : 33;
-});
-const bearPct = computed(() => {
-  const total = sentimentCounts.value.bullish + sentimentCounts.value.bearish + sentimentCounts.value.neutral;
-  return total > 0 ? (sentimentCounts.value.bearish / total * 100) : 33;
-});
+const activeSentiment = computed(() =>
+  mode.value === 'stock' ? newsStore.stockSentiment : newsStore.marketSentiment
+);
 
 const sentimentBadge = computed(() => {
-  const l = marketSentiment.value.label;
+  const l = activeSentiment.value.label;
   if (l === 'bullish') return 'bg-bull/10 text-bull';
   if (l === 'bearish') return 'bg-bear/10 text-bear';
   return 'bg-gray-500/10 text-gray-400';
 });
 
-const filters = [
-  { value: 'all', label: 'ALL', activeClass: 'text-accent' },
+const sentimentLabel = computed(() => {
+  const l = activeSentiment.value.label;
+  if (l === 'bullish') return t('news.sentiment.bullish');
+  if (l === 'bearish') return t('news.sentiment.bearish');
+  return t('news.sentiment.neutral');
+});
+
+const filters = computed(() => [
+  { value: 'all', label: t('news.all'), activeClass: 'text-accent' },
   { value: 'bullish', label: '▲', activeClass: 'text-bull' },
   { value: 'bearish', label: '▼', activeClass: 'text-bear' }
-];
+]);
 
 function setFilter(f) { newsStore.setFilter(f); }
 
+function watchlistTickers() {
+  const quotes = marketStore.watchlistData || [];
+  return quotes.map(q => ({ symbol: q.symbol, name: q.name }));
+}
+
+async function loadWatchlistNews() {
+  const tickers = watchlistTickers();
+  const extra = selectedSymbol.value ? [{ symbol: selectedSymbol.value, name: marketStore.selectedQuote?.name }] : [];
+  const all = [...tickers, ...extra];
+  await newsStore.fetchMarketNews(
+    all.map(t => t.symbol).filter(Boolean),
+    all.map(t => t.name || '')
+  );
+}
+
 watch(selectedSymbol, async (sym) => {
   if (!isValidTicker(sym)) {
-    mode.value = 'market';
+    mode.value = 'watch';
     return;
   }
-  if (mode.value === 'stock') {
-    await newsStore.fetchStockNews(sym);
-  }
-});
+  mode.value = 'stock';
+  await newsStore.fetchStockNews(sym, marketStore.selectedQuote?.name);
+}, { immediate: true });
 
 watch(mode, async (m) => {
   if (m === 'stock' && isValidTicker(selectedSymbol.value)) {
-    await newsStore.fetchStockNews(selectedSymbol.value);
-  } else if (m === 'stock') {
-    mode.value = 'market';
+    await newsStore.fetchStockNews(selectedSymbol.value, marketStore.selectedQuote?.name);
   }
+});
+
+watch(() => marketStore.watchlistSymbols.join(','), () => {
+  loadWatchlistNews();
+});
+
+onMounted(() => {
+  loadWatchlistNews();
 });
 </script>

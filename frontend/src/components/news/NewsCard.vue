@@ -1,65 +1,41 @@
 <template>
   <article
-    class="p-2.5 border-b border-surface-300/50 hover:bg-surface-200/50 cursor-pointer transition-colors group"
+    class="px-3 py-2.5 border-b border-surface-300/40 hover:bg-surface-200/40 cursor-pointer transition-colors group"
     @click="open"
   >
     <div class="flex items-start gap-2">
+      <span class="flex-shrink-0 mt-0.5 text-xs" :class="toneClass">{{ sentimentIcon }}</span>
       <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-1.5 mb-1">
-          <span :class="sentimentClass" class="text-xs px-1.5 py-0.5 rounded font-mono font-medium flex-shrink-0">
-            {{ sentimentIcon }} {{ article.sentiment?.label || 'neutral' }}
-          </span>
-          <span class="text-gray-500 text-xs truncate font-mono">{{ article.source }}</span>
-          <span class="text-gray-600 text-xs flex-shrink-0 ml-auto">{{ timeAgo }}</span>
-        </div>
-        <p class="text-gray-200 text-xs leading-snug group-hover:text-white transition-colors line-clamp-2">
+        <p class="text-[13px] text-gray-200 leading-snug group-hover:text-white line-clamp-2">
           {{ article.headline }}
         </p>
-        <p v-if="article.summary" class="text-gray-500 text-xs mt-1 line-clamp-1">
-          {{ article.summary }}
-        </p>
-        <!-- Detected market-moving events -->
-        <div v-if="article.events?.length" class="flex flex-wrap gap-1 mt-1">
+        <div class="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-gray-600">
           <span
-            v-for="ev in article.events.slice(0, 3)"
-            :key="ev.id"
-            class="text-[9px] font-mono px-1 py-px rounded border leading-tight"
-            :class="ev.impact >= 0 ? 'bg-bull/10 text-bull border-bull/20' : 'bg-bear/10 text-bear border-bear/20'"
-          >{{ ev.label }}</span>
+            v-for="sym in (article.matchedSymbols || []).slice(0, 2)"
+            :key="sym"
+            class="text-accent"
+          >{{ sym }}</span>
+          <span class="truncate">{{ article.source }}</span>
+          <span
+            v-if="article.events?.[0]"
+            class="truncate"
+            :class="article.events[0].impact >= 0 ? 'text-bull' : 'text-bear'"
+          >{{ article.events[0].label }}</span>
+          <span class="ml-auto flex-shrink-0">{{ timeAgo }}</span>
         </div>
       </div>
-    </div>
-
-    <!-- Sentiment score bar -->
-    <div class="mt-2 flex items-center gap-2">
-      <div class="flex-1 h-0.5 bg-surface-300 rounded-full overflow-hidden">
-        <div
-          class="h-full rounded-full transition-all duration-500"
-          :class="score >= 0 ? 'bg-bull' : 'bg-bear'"
-          :style="{ width: Math.abs(score * 100) + '%', marginLeft: score >= 0 ? '50%' : `${50 + score * 50}%` }"
-        ></div>
-      </div>
-      <span class="text-xs font-mono" :class="score > 0.1 ? 'text-bull' : score < -0.1 ? 'text-bear' : 'text-gray-500'">
-        {{ (score * 100).toFixed(0) }}
-      </span>
     </div>
   </article>
 </template>
 
 <script setup>
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n();
 
 const props = defineProps({
   article: { type: Object, required: true }
-});
-
-const score = computed(() => props.article.sentiment?.score || 0);
-
-const sentimentClass = computed(() => {
-  const label = props.article.sentiment?.label;
-  if (label === 'bullish') return 'bg-bull/10 text-bull border border-bull/20';
-  if (label === 'bearish') return 'bg-bear/10 text-bear border border-bear/20';
-  return 'bg-gray-500/10 text-gray-400 border border-gray-500/20';
 });
 
 const sentimentIcon = computed(() => {
@@ -69,16 +45,21 @@ const sentimentIcon = computed(() => {
   return '●';
 });
 
+const toneClass = computed(() => {
+  const label = props.article.sentiment?.label;
+  if (label === 'bullish') return 'text-bull';
+  if (label === 'bearish') return 'text-bear';
+  return 'text-gray-600';
+});
+
 const timeAgo = computed(() => {
-  const now = new Date();
   const pub = new Date(props.article.publishedAt);
-  const diffMs = now - pub;
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return 'now';
-  if (diffMins < 60) return `${diffMins}m`;
+  const diffMins = Math.floor((Date.now() - pub) / 60000);
+  if (diffMins < 1) return t('time.now');
+  if (diffMins < 60) return t('time.minutesShort', { n: diffMins });
   const hours = Math.floor(diffMins / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
+  if (hours < 24) return t('time.hoursShort', { n: hours });
+  return t('time.daysShort', { n: Math.floor(hours / 24) });
 });
 
 function open() {
