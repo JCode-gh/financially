@@ -34,6 +34,12 @@ const REASON_RULES = [
 export function simpleReason(text) {
   const raw = stripWeight(text);
   if (!raw) return '';
+  const support = raw.match(/holding above support at \$([0-9]+(?:\.[0-9]+)?)/i);
+  if (support) return t('picks.reasons.supportHold', { price: formatPrice(support[1]) });
+  const resist = raw.match(/capped by resistance at \$([0-9]+(?:\.[0-9]+)?)/i);
+  if (resist) return t('picks.reasons.resistCap', { price: formatPrice(resist[1]) });
+  const week = raw.match(/trading at (\d+)% of its 52-week range/i);
+  if (week) return t('picks.reasons.week52pos', { n: week[1] });
   const d = direction(raw);
   for (const rule of REASON_RULES) {
     if (rule.test.test(raw)) return t(`picks.reasons.${rule.key}.${d === 'down' ? 'down' : 'up'}`);
@@ -105,13 +111,53 @@ function nonEarningsReasons(reasons = []) {
   return reasons.filter(r => !/^earnings\b/i.test(String(r)));
 }
 
+const GENERIC_LINE_RE = /korte (trend|kracht)|short-term (trend|strength)|gemiddelden zijn om|averages just flipped|momentum (verbetert|zwakt|is improving|is fading)|RSI \d+|MACD |koers is aan het (stijgen|dalen)|zit in een (opwaartse|neerwaartse) trend|price has been (rising|falling)|it is in an (up|down)trend/i;
+
+export function isGenericPickLine(text) {
+  return GENERIC_LINE_RE.test(String(text || ''));
+}
+
+export function eventLabel(ev) {
+  const id = ev?.id || ev;
+  if (!id) return ev?.label || '';
+  const key = `picks.events.${id}`;
+  const out = t(key);
+  return out === key ? (ev.label || String(id)) : out;
+}
+
+export function pickWhy(o) {
+  const headlines = (o.headlines || [])
+    .map(h => (typeof h === 'string' ? h : h?.title) || '')
+    .map(s => s.replace(/^Headline:\s*/i, '').trim())
+    .filter(Boolean);
+  const fromReasons = (o.reasons || [])
+    .filter(r => /^Headline:/i.test(String(r)))
+    .map(r => String(r).replace(/^Headline:\s*/i, '').trim());
+  const uniqueHeadlines = [...new Set([...headlines, ...fromReasons])];
+
+  const lines = simpleReasons(nonEarningsReasons(
+    (o.reasons || []).filter(r => !/^Headline:/i.test(String(r)))
+  )).filter(line => line && !isGenericPickLine(line));
+
+  const catalysts = (o.events || []).map(eventLabel).filter(Boolean);
+  return { headlines: uniqueHeadlines, lines, catalysts };
+}
+
 export function pickHeadline(o) {
-  const first = simpleReasons(nonEarningsReasons(o.reasons || []))[0];
-  if (first) return first;
+  const why = pickWhy(o);
+  if (why.headlines[0]) return shortSentence(why.headlines[0], 120);
+  if (why.catalysts[0]) return t('picks.becauseEvent', { event: why.catalysts[0] });
+  if (why.lines[0]) return why.lines[0];
   if (o.action === 'BUY') return t('picks.headlineBuy');
   if (o.action === 'SELL') return t('picks.headlineSell');
   if (o.quality === 'watch') return t('picks.headlineWatch');
   return t('picks.headlineNone');
+}
+
+export function pickNewsLines(o) {
+  const why = pickWhy(o);
+  const lead = pickHeadline(o);
+  return why.headlines.filter(h => h !== lead && shortSentence(h, 120) !== lead).slice(0, 2);
 }
 
 export function simpleFlag(flag) {

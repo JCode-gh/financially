@@ -265,3 +265,70 @@ export function analyzeArticles(articles, ticker = null) {
     articles: analyzed
   };
 }
+
+const NOISE_HEADLINE = /\b(stocks to watch|top (gainers|losers|picks)|market (wrap|recap|today)|what to (know|watch)|what'?s going on with|best stocks|these \d+ stocks|week ahead|premarket|after hours)\b/i;
+const REJECT_HEADLINE = /\b(hacker news|malware|ransomware|phishing|data breach|cyberattack|cyber attack|CVE-|vulnerability|gift guide|labor day sales|login flows|abusing microsoft|password spray)\b/i;
+const REJECT_SOURCE = /hacker news|bleepingcomputer|krebsonsecurity|thehackernews/i;
+const CATALYST_HEADLINE = /\b(earnings|revenue|guidance|upgrade|downgrade|price target|analyst|buyback|dividend|acquisition|merger|beats?|miss(es|ed)?|outlook|forecast|contract|FDA|launch|partnership|buy rating|price target)\b/i;
+
+function headlineText(article) {
+  return String(article?.headline || article?.title || '').replace(/\s+/g, ' ').trim();
+}
+
+function headlineKey(title) {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 48);
+}
+
+// Headlines that actually support a BUY/SELL call — events first, then
+// tone-aligned recent titles. Used on Picks so every name has a unique why.
+export function isDecisionHeadline(title, source = '') {
+  const t = String(title || '').trim();
+  if (t.length < 18) return false;
+  if (NOISE_HEADLINE.test(t) || REJECT_HEADLINE.test(t)) return false;
+  if (source && REJECT_SOURCE.test(source)) return false;
+  return true;
+}
+
+export function pickDecisionHeadlines(news, direction = 1, limit = 2, ticker = '') {
+  const want = direction >= 0 ? 1 : -1;
+  const sym = String(ticker || '').toUpperCase().split('.')[0];
+  const seen = new Set();
+  const scored = [];
+
+  for (const article of news?.articles || []) {
+    const title = headlineText(article);
+    if (title.length < 18 || NOISE_HEADLINE.test(title)) continue;
+    if (REJECT_HEADLINE.test(title) || REJECT_SOURCE.test(article.source || '')) continue;
+    const key = headlineKey(title);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const events = article.events || [];
+    const evAlign = events.filter(e => want * (e.impact || 0) > 0);
+    const evAgainst = events.some(e => want * (e.impact || 0) < 0);
+    if (evAgainst && !evAlign.length) continue;
+
+    const mentions = sym && title.toUpperCase().includes(sym);
+    const catalyst = evAlign.length > 0 || CATALYST_HEADLINE.test(title);
+    if (!catalyst && !mentions) continue;
+
+    const tone = Number(article.sentiment?.score || 0);
+    const recency = recencyWeight(article.publishedAt);
+    let score = recency * 0.5 + sourceWeight(article.source) * 0.15;
+    if (evAlign.length) score += 2 + evAlign.reduce((s, e) => s + Math.abs(e.impact || 0), 0);
+    if (catalyst) score += 0.7;
+    if (tone * want > 0.08) score += 0.9;
+    else if (tone * want < -0.15) score -= 0.8;
+
+    scored.push({
+      title: title.length > 140 ? `${title.slice(0, 137).trimEnd()}…` : title,
+      source: article.source || '',
+      publishedAt: article.publishedAt || null,
+      score
+    });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.filter(h => h.score > 0.55).slice(0, limit)
+    .map(({ title, source, publishedAt }) => ({ title, source, publishedAt }));
+}

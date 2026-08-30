@@ -85,11 +85,61 @@ export function classifyPick({
   return { action, rawSignal, actionable, quality, flags, rank };
 }
 
+const GENERIC_SIGNAL_KEYS = new Set([
+  'stochastic', 'rsi', 'macd', 'sma_crossover', 'ema_crossover', 'bollinger', 'adx_trend'
+]);
+
+const GENERIC_REASON_RE = /^(Stochastic|RSI|MACD|SMA crossover|EMA crossover|Bollinger|Trend strength|Price momentum|Trend regime|Volume trend|News context)\b|^(uptrend|downtrend|strong uptrend|strong downtrend)\b|^MACD momentum|^RSI \d+$/i;
+
+export function isGenericPickReason(text) {
+  return GENERIC_REASON_RE.test(String(text || '').replace(/\s*\(weight[^)]*\)/gi, '').trim());
+}
+
+export function specificPickReason(indicators, direction) {
+  if (!indicators) return '';
+  const { sr, week52, rsi, breakout } = indicators;
+  if (direction > 0 && breakout?.type === 'up') {
+    return 'Breakout above 20-day high' + (breakout.signal === 1 ? ' on heavy volume' : '');
+  }
+  if (direction < 0 && breakout?.type === 'down') {
+    return 'Breakdown below 20-day low' + (breakout.signal === -1 ? ' on heavy volume' : '');
+  }
+  if (direction > 0 && sr?.support?.price) {
+    return `Holding above support at $${Number(sr.support.price).toFixed(2)}`;
+  }
+  if (direction < 0 && sr?.resistance?.price) {
+    return `Capped by resistance at $${Number(sr.resistance.price).toFixed(2)}`;
+  }
+  if (week52?.position != null) {
+    return `Trading at ${Math.round(week52.position * 100)}% of its 52-week range`;
+  }
+  if (rsi != null) return `RSI ${Math.round(rsi)}`;
+  return '';
+}
+
+export function assemblePickReasons({
+  narrativeReasons = [], weightedReasons = [], earnings, indicators, direction
+} = {}) {
+  const out = [];
+  if (earnings && earnings.daysUntil >= 0 && earnings.daysUntil <= 7) {
+    out.push(`Earnings ${earnings.daysUntil === 0 ? 'TODAY' : `in ${earnings.daysUntil}d`}`);
+  }
+  const specific = specificPickReason(indicators, direction);
+  if (specific) out.push(specific);
+  for (const reason of [...narrativeReasons, ...weightedReasons]) {
+    const line = String(reason || '').trim();
+    if (!line || isGenericPickReason(line) || out.includes(line)) continue;
+    out.push(line);
+  }
+  return out.slice(0, 5);
+}
+
 export function buildWeightedReasons(signals, weights, newsSentiment) {
   if (!signals || !weights) return [];
   const entries = [];
   for (const [key, sig] of Object.entries(signals)) {
     if (sig == null || Math.abs(sig) < 0.05) continue;
+    if (GENERIC_SIGNAL_KEYS.has(key) && Math.abs(sig) < 0.9) continue;
     const w = weights[key] ?? 0;
     const contrib = sig * w;
     if (Math.abs(contrib) < 0.02) continue;

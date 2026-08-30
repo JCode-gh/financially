@@ -221,6 +221,7 @@ function migrateScanRankColumns(db) {
   const cols = new Set(db.prepare('PRAGMA table_info(scan_results)').all().map(c => c.name));
   if (!cols.has('cross_rank')) db.exec('ALTER TABLE scan_results ADD COLUMN cross_rank REAL');
   if (!cols.has('cross_percentile')) db.exec('ALTER TABLE scan_results ADD COLUMN cross_percentile REAL');
+  if (!cols.has('headlines')) db.exec('ALTER TABLE scan_results ADD COLUMN headlines TEXT');
 }
 
 function migrateBacktestColumns(db) {

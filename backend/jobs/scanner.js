@@ -5,11 +5,12 @@ import { getHistoricalSeries } from '../services/historyProvider.js';
 import { getQuickQuote } from '../providers/marketData.js';
 import { getStockArticles } from '../providers/news.js';
 import { getUpcomingEarnings } from '../services/earningsCalendar.js';
-import { analyzeArticles } from '../models/sentimentAnalyzer.js';
+import { analyzeArticles, pickDecisionHeadlines, isDecisionHeadline } from '../models/sentimentAnalyzer.js';
 import { getHorizonWeights, computeScore, buildTradePlan, buildReasons, computeEnsembleScore, blendForHorizon } from '../models/predictionEngine.js';
 import {
-  SCAN_GATES, applyRegimeAdjustment, classifyPick, buildWeightedReasons
+  SCAN_GATES, applyRegimeAdjustment, classifyPick, buildWeightedReasons, assemblePickReasons, isGenericPickReason
 } from '../models/scannerScoring.js';
+import { pLimit } from '../lib/cache.js';
 import { getFundamentalSignals, mergeFundamentalSignals } from '../models/fundamentalsSignals.js';
 import { getMarketRegime } from '../models/marketRegime.js';
 import { rankCrossSectionally } from '../models/signalHygiene.js';
@@ -21,6 +22,7 @@ export { getSymbolsReadyForScan };
 
 const HISTORY_FRESH_MS = 3 * 3600_000;
 let scanning = false;
+let enrichCache = { runId: null, at: 0, results: null };
 
 function withLiveQuote(candles, quote) {
   if (!quote?.price || !candles.length) return candles;
@@ -117,14 +119,13 @@ function finalizeScanRow(raw, pick, crossRank, crossPercentile) {
     : null;
 
   const action = pick.action;
-  const direction = action === 'BUY' ? 1 : action === 'SELL' ? -1 : 0;
-  const narrativeReasons = buildReasons(indicators, signals, news, direction || (pick.rawSignal === 'BUY' ? 1 : -1));
+  const direction = action === 'BUY' ? 1 : action === 'SELL' ? -1 : (pick.rawSignal === 'SELL' ? -1 : 1);
+  const narrativeReasons = buildReasons(indicators, signals, news, direction);
   const weightedReasons = buildWeightedReasons(signals, weights5d, news);
-  const reasons = [...new Set([...weightedReasons, ...narrativeReasons])].slice(0, 5);
-
-  if (earnings && earnings.daysUntil >= 0 && earnings.daysUntil <= 7) {
-    reasons.unshift(`Earnings ${earnings.daysUntil === 0 ? 'TODAY' : `in ${earnings.daysUntil}d`}`);
-  }
+  const headlines = pickDecisionHeadlines(news, direction, 2, raw.ticker);
+  const reasons = assemblePickReasons({
+    narrativeReasons, weightedReasons, earnings, indicators, direction
+  });
 
   return {
     ticker: raw.ticker,
@@ -153,7 +154,8 @@ function finalizeScanRow(raw, pick, crossRank, crossPercentile) {
     earningsDate: earnings?.date || null,
     earningsInDays: earnings?.daysUntil ?? null,
     reasons,
-    events: (news.topEvents || []).slice(0, 4)
+    events: (news.topEvents || []).filter(e => direction * (e.impact || 0) >= 0).slice(0, 3),
+    headlines
   };
 }
 
@@ -213,8 +215,8 @@ export async function runScan(symbols) {
       INSERT INTO scan_results
         (run_id, ticker, action, score, confidence, price, entry, stop, target, rr, position_pct,
          trend, rsi, adx, news_score, news_count, buzz, earnings_date, earnings_in_days, reasons, events,
-         quality, actionable, raw_signal, flags, rank, cross_rank, cross_percentile)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         quality, actionable, raw_signal, flags, rank, cross_rank, cross_percentile, headlines)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertAll = db.transaction(rows => {
       for (const r of rows) {
@@ -223,11 +225,13 @@ export async function runScan(symbols) {
           r.rr, r.positionPct, r.trend, r.rsi, r.adx, r.newsScore, r.newsCount, r.buzz,
           r.earningsDate, r.earningsInDays, JSON.stringify(r.reasons), JSON.stringify(r.events),
           r.quality, r.actionable ? 1 : 0, r.rawSignal, JSON.stringify(r.flags || []), r.rank,
-          r.crossRank ?? null, r.crossPercentile ?? null
+          r.crossRank ?? null, r.crossPercentile ?? null, JSON.stringify(r.headlines || [])
         );
       }
     });
     insertAll(results);
+
+    enrichCache = { runId, at: Date.now(), results: null };
 
     const sorted = results.sort((a, b) => b.rank - a.rank);
     const actionable = sorted.filter(r => r.actionable);
@@ -244,13 +248,42 @@ export async function runScan(symbols) {
   }
 }
 
-export function getLatestScan() {
+async function attachHeadlines(results) {
+  const need = results.filter(r =>
+    (r.actionable || r.quality === 'watch') && !(r.headlines && r.headlines.length)
+  ).slice(0, 12);
+  if (!need.length) return results;
+
+  await pLimit(need.map(row => async () => {
+    const articles = await getStockArticles(row.ticker, undefined, { deep: true }).catch(() => []);
+    const news = analyzeArticles(articles, row.ticker);
+    const direction = row.action === 'SELL' || row.rawSignal === 'SELL' ? -1 : 1;
+    const found = pickDecisionHeadlines(news, direction, 2, row.ticker);
+    if (found.length) row.headlines = found;
+    if (!row.events?.length && news.topEvents?.length) {
+      row.events = news.topEvents.filter(e => direction * (e.impact || 0) >= 0).slice(0, 3);
+    }
+  }), 4);
+  return results;
+}
+
+export async function getLatestScan() {
   const db = getDB();
   const last = db.prepare('SELECT run_id, MAX(run_at) as run_at FROM scan_results GROUP BY run_id ORDER BY run_id DESC LIMIT 1').get();
   if (!last) return { runAt: null, results: [] };
 
+  const ttl = enrichCache.results?.some(r => (r.actionable || r.quality === 'watch') && !r.headlines?.length)
+    ? 45_000
+    : 180_000;
+  if (enrichCache.runId === last.run_id && enrichCache.results && Date.now() - enrichCache.at < ttl) {
+    return { runAt: last.run_at, results: enrichCache.results };
+  }
+
   const rows = db.prepare('SELECT * FROM scan_results WHERE run_id = ?').all(last.run_id);
-  return { runAt: last.run_at, results: rows.map(mapScanRow).sort((a, b) => (b.rank || 0) - (a.rank || 0)) };
+  const results = rows.map(mapScanRow).map(decorateStoredPick).sort((a, b) => (b.rank || 0) - (a.rank || 0));
+  await attachHeadlines(results);
+  enrichCache = { runId: last.run_id, at: Date.now(), results };
+  return { runAt: last.run_at, results };
 }
 
 function mapScanRow(r) {
@@ -280,9 +313,29 @@ function mapScanRow(r) {
     buzz: r.buzz,
     earningsDate: r.earnings_date,
     earningsInDays: r.earnings_in_days,
-    reasons: r.reasons ? JSON.parse(r.reasons) : [],
-    events: r.events ? JSON.parse(r.events) : []
+    reasons: parseJson(r.reasons, []),
+    events: parseJson(r.events, []),
+    headlines: parseJson(r.headlines, [])
   };
+}
+
+function parseJson(raw, fallback) {
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+
+function decorateStoredPick(row) {
+  row.headlines = (row.headlines || []).filter(h =>
+    isDecisionHeadline(typeof h === 'string' ? h : h?.title, h?.source)
+  );
+  const distinctive = (row.reasons || []).some(r => r && !isGenericPickReason(r) && !/^Earnings /i.test(r));
+  if (distinctive) return row;
+  if (row.stop && (row.action === 'BUY' || row.rawSignal === 'BUY')) {
+    row.reasons = [`Holding above support at $${Number(row.stop).toFixed(2)}`, ...(row.reasons || [])];
+  } else if (row.target && (row.action === 'SELL' || row.rawSignal === 'SELL')) {
+    row.reasons = [`Capped by resistance at $${Number(row.target).toFixed(2)}`, ...(row.reasons || [])];
+  }
+  return row;
 }
 
 export function getAlerts(limit = 40) {

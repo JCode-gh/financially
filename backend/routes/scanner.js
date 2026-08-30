@@ -45,7 +45,7 @@ async function getScanMeta() {
 }
 
 router.get('/latest', asyncHandler(async (req, res) => {
-  const data = getLatestScan();
+  const data = await getLatestScan();
   return ok(res, { ...data, meta: await getScanMeta() });
 }));
 
@@ -56,7 +56,7 @@ router.post('/run', rateLimit({ windowMs: 10 * 60_000, max: 6 }), asyncHandler(a
 
   const result = await withLock('scan', () => runScan(symbols));
   if (result?.skipped) {
-    return ok(res, { ...getLatestScan(), meta: await getScanMeta() }, { note: 'scan already in progress' });
+    return ok(res, { ...await getLatestScan(), meta: await getScanMeta() }, { note: 'scan already in progress' });
   }
   return ok(res, {
     runAt: new Date().toISOString(),

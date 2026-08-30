@@ -120,8 +120,20 @@
             </div>
 
             <p class="mt-1.5 text-sm text-gray-300 leading-snug">
-              {{ ui.isSimple ? pickHeadline(o) : (displayReason(o.reasons?.[0]) || $t('picks.noReason')) }}
+              {{ pickHeadline(o) }}
             </p>
+            <ul v-if="pickNewsLines(o).length" class="mt-1.5 space-y-1">
+              <li v-for="line in pickNewsLines(o)" :key="line" class="text-xs text-gray-400 leading-snug">
+                {{ line }}
+              </li>
+            </ul>
+            <div v-if="pickWhy(o).catalysts.length" class="mt-1.5 flex flex-wrap gap-1">
+              <span
+                v-for="c in pickWhy(o).catalysts.slice(0, 3)"
+                :key="c"
+                class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-300 text-gray-400"
+              >{{ c }}</span>
+            </div>
 
             <div v-if="hasLevels(o)" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
               <span class="text-gray-500">{{ ui.isSimple ? $t('picks.around') : $t('picks.entry') }} <span class="font-mono text-gray-300">${{ fmt(o.entry) }}</span></span>
@@ -155,8 +167,8 @@
             </template>
 
             <template v-else>
-              <ul v-if="o.reasons?.length > 1" class="space-y-1">
-                <li v-for="(line, i) in o.reasons.slice(1)" :key="i" class="text-sm text-gray-300 font-mono leading-relaxed">{{ displayReason(line) }}</li>
+              <ul v-if="simpleWhy(o).length" class="space-y-1">
+                <li v-for="line in simpleWhy(o)" :key="line" class="text-sm text-gray-300 leading-relaxed">{{ line }}</li>
               </ul>
               <p v-if="o.flags?.length" class="text-xs font-mono text-gray-500">
                 {{ o.actionable ? $t('picks.notes') : $t('picks.notActionable') }}: {{ o.flags.map(simpleFlag).join(' · ') }}
@@ -190,7 +202,7 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useScannerStore } from '../stores/scannerStore.js';
 import { useUiStore } from '../stores/uiStore.js';
-import { pickHeadline, simpleReasons, simpleFlag, earningsLine, displayReason } from '../utils/picks.js';
+import { pickHeadline, pickNewsLines, pickWhy, simpleFlag, earningsLine, shortSentence } from '../utils/picks.js';
 
 const router = useRouter();
 const scanner = useScannerStore();
@@ -247,9 +259,9 @@ function hasLevels(o) {
 }
 
 function simpleWhy(o) {
-  const lines = simpleReasons((o.reasons || []).filter(r => !/^earnings\b/i.test(String(r))));
+  const why = pickWhy(o);
   const head = pickHeadline(o);
-  return lines.filter(line => line !== head);
+  return [...why.headlines, ...why.lines].filter(line => line && line !== head && shortSentence(line, 120) !== head);
 }
 
 function simpleWhyNot(o) {
