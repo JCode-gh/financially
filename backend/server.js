@@ -10,8 +10,8 @@ import { pingOllama } from './services/ollama.js';
 initDB();
 
 const app = createApp();
-const server = app.listen(config.port, () => {
-  logger.info(`Financially backend on http://localhost:${config.port}`);
+const server = app.listen(config.port, '127.0.0.1', () => {
+  logger.info(`Financially backend on http://127.0.0.1:${config.port}`);
   logger.info(`Health: http://localhost:${config.port}/api/health`);
   logger.info(`Finnhub: ${config.keys.finnhub ? 'yes' : 'no'}`);
   logger.info(`NewsAPI: ${config.keys.newsApi ? 'yes' : 'no'}`);

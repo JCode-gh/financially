@@ -112,14 +112,14 @@ async function fetchDeepest(symbol) {
   const intl = isInternationalSymbol(symbol);
   if (intl) {
     return firstSeries([
-      () => getYahoo(symbol, MAX_DAYS),
-      () => getStooq(symbol, MAX_DAYS)
+      () => getStooq(symbol, MAX_DAYS),
+      () => getYahoo(symbol, MAX_DAYS)
     ]);
   }
   return firstSeries([
     () => getTwelve(symbol, MAX_DAYS),
-    () => getYahoo(symbol, MAX_DAYS),
     () => getStooq(symbol, MAX_DAYS),
+    () => getYahoo(symbol, MAX_DAYS),
     () => getAlpha(symbol, MAX_DAYS)
   ]);
 }

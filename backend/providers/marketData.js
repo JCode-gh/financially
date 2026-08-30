@@ -12,6 +12,7 @@ import {
 } from '../services/finnhub.js';
 import { getQuote as getAvQuote } from '../services/alphaVantage.js';
 import { getHistoricalSeries, quoteFromDisk } from '../services/historyProvider.js';
+import { getQuote as getStooqQuote, getMarketOverview as getStooqMarket } from '../services/stooq.js';
 import { getIntraday } from '../services/twelveData.js';
 import { enrichSearchResult, pickBestSearchMatch, rankSearchResult } from '../services/symbolFormat.js';
 import { createTtlCache, pLimit } from '../lib/cache.js';
@@ -56,6 +57,7 @@ export async function getQuote(symbol) {
   let data = await getYahooQuote(symbol).catch(() => null);
   if (!data && isUsPlain(symbol)) data = await getFinnhubQuote(symbol).catch(() => null);
   if (!data) data = await getAvQuote(symbol).catch(() => null);
+  if (!data) data = await getStooqQuote(symbol).catch(() => null);
   if (!data) data = await quoteFromHistory(symbol);
   return data;
 }
@@ -80,6 +82,7 @@ export async function getQuotes(symbols) {
 export async function getMarket() {
   let data = await getYahooMarket().catch(() => null);
   if (!data?.length) data = await getFinnhubMarket().catch(() => null);
+  if (!data?.length) data = await getStooqMarket().catch(() => null);
   return data?.length ? data : [];
 }
 

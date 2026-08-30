@@ -8,7 +8,7 @@
 
 [build.environment]
   NODE_VERSION = "20"
-  VITE_BACKEND_API_URL = "https://future-finger-cassette-searches.trycloudflare.com"
+  VITE_BACKEND_API_URL = "https://halo-wolf-seen-hint.trycloudflare.com"
 
 # Vue Router history mode — all routes serve index.html
 [[redirects]]

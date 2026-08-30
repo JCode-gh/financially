@@ -1,4 +1,4 @@
-const PRODUCTION_BACKEND = 'https://future-finger-cassette-searches.trycloudflare.com';
+const PRODUCTION_BACKEND = 'https://halo-wolf-seen-hint.trycloudflare.com';
 
 const backendRoot = (
   import.meta.env.DEV

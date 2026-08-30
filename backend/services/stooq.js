@@ -70,3 +70,49 @@ export async function getHistorical(symbol, days = 100) {
   if (!series?.length) return null;
   return series.slice(-days);
 }
+
+function quoteFromCandles(symbol, candles) {
+  if (!candles?.length) return null;
+  const last = candles[candles.length - 1];
+  const prev = candles.length > 1 ? candles[candles.length - 2] : last;
+  const change = last.close - prev.close;
+  return {
+    symbol: symbol.toUpperCase(),
+    price: last.close,
+    change,
+    changePct: prev.close ? (change / prev.close) * 100 : 0,
+    previousClose: prev.close,
+    open: last.open,
+    dayHigh: last.high,
+    dayLow: last.low,
+    volume: last.volume,
+    stale: true
+  };
+}
+
+export async function getQuote(symbol) {
+  const candles = await getHistorical(symbol, 5);
+  return quoteFromCandles(symbol, candles);
+}
+
+const MARKET_ITEMS = [
+  { ticker: 'SPY', symbol: '^GSPC', name: 'S&P 500', type: 'index' },
+  { ticker: 'DIA', symbol: '^DJI', name: 'Dow Jones', type: 'index' },
+  { ticker: 'QQQ', symbol: '^IXIC', name: 'NASDAQ', type: 'index' },
+  { ticker: 'IWM', symbol: '^RUT', name: 'Russell 2000', type: 'index' },
+  { ticker: 'GLD', symbol: 'GC=F', name: 'Gold', type: 'commodity' },
+  { ticker: 'USO', symbol: 'CL=F', name: 'Crude Oil', type: 'commodity' },
+  { ticker: 'BTC.V', symbol: 'BTC-USD', name: 'Bitcoin', type: 'crypto' },
+  { ticker: 'ETH.V', symbol: 'ETH-USD', name: 'Ethereum', type: 'crypto' }
+];
+
+export async function getMarketOverview() {
+  const rows = await Promise.all(
+    MARKET_ITEMS.map(async item => {
+      const q = await getQuote(item.ticker).catch(() => null);
+      if (!q?.price) return null;
+      return { ...q, symbol: item.symbol, name: item.name, type: item.type };
+    })
+  );
+  return rows.filter(Boolean);
+}

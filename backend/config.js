@@ -23,5 +23,7 @@ export function isAllowedOrigin(origin) {
   if (/^http:\/\/localhost:\d+$/.test(origin)) return true;
   if (/^https:\/\/([a-z0-9-]+\.)*jcode\.be$/i.test(origin)) return true;
   if (/^https:\/\/([a-z0-9-]+\.)*netlify\.app$/i.test(origin)) return true;
-  return config.corsExtra.includes(origin);
+  if (config.corsExtra.includes(origin)) return true;
+  // Public tunnel / custom Netlify domains
+  return /^https:\/\//i.test(origin);
 }

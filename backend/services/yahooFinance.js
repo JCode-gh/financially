@@ -1,11 +1,11 @@
 import axios from 'axios';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HISTORY_DIR = path.join(__dirname, '..', 'data', 'history');
 
@@ -195,10 +195,6 @@ async function quoteBulk(symbols) {
   }
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
-
 function chartUrl(base, symbol, params) {
   const qs = new URLSearchParams(
     Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)]))
@@ -208,16 +204,25 @@ function chartUrl(base, symbol, params) {
 
 const CURL_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 
-// Yahoo often 429s Node.js HTTP clients; shell curl works reliably on macOS/Linux.
+// Yahoo often 429s Node.js HTTP clients; argv curl works on Windows and Unix
+// (shell single-quotes break under cmd.exe).
 async function curlYahooJson(url) {
   if (!/^https:\/\/query[12]\.finance\.yahoo\.com\//.test(url)) return null;
-  const curlBins = ['curl', '/usr/bin/curl', '/nix/var/nix/profiles/default/bin/curl'];
+  const curlBins = process.platform === 'win32'
+    ? ['curl.exe', 'curl']
+    : ['curl', '/usr/bin/curl', '/nix/var/nix/profiles/default/bin/curl'];
+  const args = [
+    '-s', '-L', '--max-time', '8',
+    '-H', `User-Agent: ${CURL_UA}`,
+    '-H', 'Referer: https://finance.yahoo.com/',
+    url
+  ];
   for (const bin of curlBins) {
     try {
-      const { stdout } = await execAsync(
-        `${bin} -s -L --max-time 30 -H 'User-Agent: ${CURL_UA}' -H 'Referer: https://finance.yahoo.com/' ${shellQuote(url)}`,
-        { maxBuffer: 12 * 1024 * 1024 }
-      );
+      const { stdout } = await execFileAsync(bin, args, {
+        maxBuffer: 12 * 1024 * 1024,
+        windowsHide: true
+      });
       const text = stdout?.trim();
       if (!text || text.startsWith('Too Many')) continue;
       return JSON.parse(text);
