@@ -7,18 +7,23 @@
     </div>
     <div class="ticker-wrap flex-1 relative">
       <div class="ticker-content">
-        <template v-for="item in doubled" :key="item._key">
-          <span class="inline-flex items-center gap-2 px-4 text-xs font-mono border-r border-surface-300/50 h-8">
-            <span class="text-gray-400">{{ item.name }}</span>
-            <span class="font-semibold" :class="item.changePct >= 0 ? 'text-bull' : 'text-bear'">
-              {{ formatPrice(item.price, item.type) }}
-            </span>
-            <span :class="item.changePct >= 0 ? 'text-bull' : 'text-bear'">
-              {{ item.changePct >= 0 ? '▲' : '▼' }}
-              {{ Math.abs(item.changePct || 0).toFixed(2) }}%
-            </span>
+        <RouterLink
+          v-for="item in doubled"
+          :key="item._key"
+          :to="{ name: 'stock', params: { symbol: item.symbol } }"
+          class="group inline-flex items-center gap-2 px-4 text-xs font-mono border-r border-surface-300/50 h-8 hover:bg-white/5 cursor-pointer no-underline hover:no-underline"
+          :title="item.symbol"
+          @click="open(item.symbol)"
+        >
+          <span class="text-gray-400 group-hover:text-gray-200">{{ item.name }}</span>
+          <span class="font-semibold" :class="item.changePct >= 0 ? 'text-bull' : 'text-bear'">
+            {{ formatNumber(item.price, 2) }}
           </span>
-        </template>
+          <span :class="item.changePct >= 0 ? 'text-bull' : 'text-bear'">
+            {{ item.changePct >= 0 ? '▲' : '▼' }}
+            {{ formatNumber(Math.abs(item.changePct || 0), 2) }}%
+          </span>
+        </RouterLink>
       </div>
     </div>
     <div class="flex-shrink-0 px-3 text-xs text-gray-500 border-l border-surface-300 h-full flex items-center font-mono">
@@ -30,9 +35,14 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useMarketStore } from '../../stores/marketStore.js';
+import { formatNumber } from '../../utils/format.js';
 import { intlLocale, readLocale } from '../../i18n/locale.js';
 
 const store = useMarketStore();
+
+function open(symbol) {
+  if (symbol) store.selectSymbol(symbol);
+}
 const timeStr = ref('');
 let timer;
 
@@ -40,13 +50,6 @@ const doubled = computed(() => {
   const items = store.marketData;
   return [...items, ...items].map((item, i) => ({ ...item, _key: `${item.symbol}_${i}` }));
 });
-
-function formatPrice(price, type) {
-  if (!price) return '—';
-  if (type === 'forex') return price.toFixed(4);
-  if (price > 1000) return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
-  return price.toFixed(2);
-}
 
 function updateTime() {
   const now = new Date();

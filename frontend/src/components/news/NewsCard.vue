@@ -1,12 +1,42 @@
 <template>
-  <article
-    class="px-3 py-2.5 border-b border-surface-300/40 hover:bg-surface-200/40 cursor-pointer transition-colors group"
-    @click="open"
+  <a
+    v-if="href"
+    :href="href"
+    target="_blank"
+    rel="noopener noreferrer"
+    class="block px-3 py-2.5 border-b border-surface-300/40 hover:bg-surface-200/40 transition-colors group"
   >
     <div class="flex items-start gap-2">
       <span class="flex-shrink-0 mt-0.5 text-xs" :class="toneClass">{{ sentimentIcon }}</span>
       <div class="flex-1 min-w-0">
-        <p class="text-[13px] text-gray-200 leading-snug group-hover:text-white line-clamp-2">
+        <p class="text-[13px] text-gray-200 leading-snug group-hover:text-white group-hover:underline underline-offset-2 decoration-accent/50 line-clamp-2">
+          {{ article.headline }}
+        </p>
+        <div class="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-gray-600">
+          <span
+            v-for="sym in (article.matchedSymbols || []).slice(0, 2)"
+            :key="sym"
+            class="text-accent"
+          >{{ sym }}</span>
+          <span class="truncate group-hover:text-gray-400">{{ article.source }}</span>
+          <span
+            v-if="article.events?.[0]"
+            class="truncate"
+            :class="article.events[0].impact >= 0 ? 'text-bull' : 'text-bear'"
+          >{{ article.events[0].label }}</span>
+          <span class="ml-auto flex-shrink-0">{{ timeAgo }}</span>
+        </div>
+      </div>
+    </div>
+  </a>
+  <article
+    v-else
+    class="px-3 py-2.5 border-b border-surface-300/40 hover:bg-surface-200/40 transition-colors group"
+  >
+    <div class="flex items-start gap-2">
+      <span class="flex-shrink-0 mt-0.5 text-xs" :class="toneClass">{{ sentimentIcon }}</span>
+      <div class="flex-1 min-w-0">
+        <p class="text-[13px] text-gray-200 leading-snug line-clamp-2">
           {{ article.headline }}
         </p>
         <div class="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-gray-600">
@@ -38,6 +68,16 @@ const props = defineProps({
   article: { type: Object, required: true }
 });
 
+const href = computed(() => {
+  const raw = String(props.article.url || props.article.link || '').trim();
+  try {
+    const u = new URL(raw);
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : '';
+  } catch {
+    return '';
+  }
+});
+
 const sentimentIcon = computed(() => {
   const label = props.article.sentiment?.label;
   if (label === 'bullish') return '▲';
@@ -61,8 +101,4 @@ const timeAgo = computed(() => {
   if (hours < 24) return t('time.hoursShort', { n: hours });
   return t('time.daysShort', { n: Math.floor(hours / 24) });
 });
-
-function open() {
-  if (props.article.url) window.open(props.article.url, '_blank', 'noopener,noreferrer');
-}
 </script>

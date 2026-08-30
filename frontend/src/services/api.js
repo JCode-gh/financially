@@ -64,7 +64,7 @@ export const predictionsApi = {
   forSymbol: (symbol) => http.get(`/predictions/${symPath(symbol)}`),
   generate: (symbol, name, { force } = {}) =>
     http.post(`/predictions/generate/${symPath(symbol)}`, { name, force: !!force, lang: readLocale() }, {
-      timeout: 90000,
+      timeout: 110000,
       params: { lang: readLocale() }
     }),
   tradeSetup: (symbol, maxDays) => http.post(`/predictions/trade-setup/${symPath(symbol)}`, { maxDays }),

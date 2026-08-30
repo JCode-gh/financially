@@ -14,7 +14,7 @@ export const config = {
   },
   ollama: {
     host: process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
-    model: process.env.OLLAMA_MODEL || 'llama3.2'
+    model: process.env.OLLAMA_MODEL || 'qwen2.5:7b'
   }
 };
 

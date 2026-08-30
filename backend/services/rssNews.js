@@ -72,7 +72,7 @@ function parseRss(xml, sourceName) {
     items.push({
       id: link || headline,
       headline,
-      summary: tag(block, 'description').slice(0, 280),
+      summary: tag(block, 'description').slice(0, 480),
       source,
       url: link,
       image: block.match(/<media:content[^>]*url="([^"]+)"/i)?.[1] || null,

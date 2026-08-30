@@ -1,27 +1,50 @@
 import axios from 'axios';
 import { normalizeLang, textMatchesLang } from '../lib/locale.js';
+import { isUsefulText } from '../lib/articleBody.js';
 
 const HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
-const MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
+const WANTED = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
 const TIMEOUT = Number(process.env.OLLAMA_TIMEOUT_MS || 45000);
+const FALLBACKS = ['llama3.2', 'llama3.1', 'llama3', 'qwen2.5', 'qwen2', 'mistral', 'gemma3', 'gemma2'];
 
-let lastPing = { ok: false, model: MODEL, at: 0 };
+let activeModel = WANTED;
+let lastPing = { ok: false, model: WANTED, at: 0 };
+
+function isChatModel(name) {
+  return !/embed|vision/i.test(name);
+}
+
+function matchModel(names, wanted) {
+  return names.find(n => n === wanted || n === `${wanted}:latest` || n.startsWith(`${wanted}:`));
+}
+
+function pickInstalledModel(names) {
+  const chat = (names || []).filter(isChatModel);
+  return matchModel(chat, WANTED) || FALLBACKS.map(w => matchModel(chat, w)).find(Boolean) || chat[0] || '';
+}
 
 export function ollamaConfig() {
-  return { host: HOST, model: MODEL };
+  return { host: HOST, model: activeModel };
 }
 
 export async function pingOllama() {
   try {
     const res = await axios.get(`${HOST}/api/tags`, { timeout: 2500 });
     const names = (res.data?.models || []).map(m => m.name);
-    const ready = names.some(n => n === MODEL || n.startsWith(`${MODEL}:`));
-    lastPing = { ok: ready, model: MODEL, models: names, at: Date.now() };
+    const chosen = pickInstalledModel(names);
+    activeModel = chosen || WANTED;
+    lastPing = { ok: !!chosen, model: activeModel, wanted: WANTED, models: names, at: Date.now() };
     return lastPing;
   } catch {
-    lastPing = { ok: false, model: MODEL, at: Date.now() };
+    lastPing = { ok: false, model: activeModel, wanted: WANTED, at: Date.now() };
     return lastPing;
   }
+}
+
+async function ensureModel() {
+  if (lastPing.ok && Date.now() - lastPing.at < 60_000) return;
+  await pingOllama();
+  if (!lastPing.ok) throw new Error(`Ollama offline (${activeModel})`);
 }
 
 export function lastOllamaStatus() {
@@ -472,7 +495,7 @@ function normalizeDecision(raw, fallbackAction = 'HOLD') {
     risks: Array.isArray(raw?.risks) ? raw.risks.map(s => String(s).trim()).filter(Boolean).slice(0, 4) : [],
     catalysts: Array.isArray(raw?.catalysts) ? raw.catalysts.map(s => String(s).trim()).filter(Boolean).slice(0, 3) : [],
     disagreement: disagreement === 'news_vs_tech' ? 'news_vs_tech' : 'none',
-    model: MODEL
+    model: activeModel
   };
 }
 
@@ -483,15 +506,177 @@ function parseJsonContent(text) {
   }
 }
 
-async function chatJson(messages) {
+async function chatJson(messages, opts = {}) {
+  await ensureModel();
   const res = await axios.post(`${HOST}/api/chat`, {
-    model: MODEL,
+    model: activeModel,
     stream: false,
     format: 'json',
-    options: { temperature: 0.28, num_predict: 480 },
+    options: { temperature: opts.temperature ?? 0.28, num_predict: opts.numPredict ?? 480 },
     messages
-  }, { timeout: TIMEOUT });
+  }, { timeout: opts.timeout ?? TIMEOUT });
   return parseJsonContent(res.data?.message?.content || '{}');
+}
+
+function articleLines(items) {
+  return items.map((a, i) => {
+    const raw = String(a.text || a.summary || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+    const body = isUsefulText(raw, a.title) ? raw : '';
+    return `${i + 1}. TITLE: ${a.title}${a.source ? ` (${a.source})` : ''}\nARTICLE TEXT:\n${body || '(no article text fetched)'}`;
+  }).join('\n\n');
+}
+
+function inventedNumbers(blurb, text) {
+  const nums = String(blurb).match(/\d+(?:[.,]\d+)?/g) || [];
+  if (!nums.length) return false;
+  const corpus = String(text);
+  return nums.some(n => {
+    const variants = [n, n.replace(',', '.'), n.replace('.', ',')];
+    return !variants.some(v => corpus.includes(v));
+  });
+}
+
+function contradictsSource(blurb, source) {
+  const b = String(blurb).toLowerCase();
+  const s = String(source).toLowerCase();
+  const pairs = [
+    [/\b(lower|cut|trim|reduce|slash|downgrade)s?\b/, /\b(verhoog|raised?|hike|boost|upgrade)/],
+    [/\b(raise|hike|boost|upgrade|increas)\w*\b/, /\b(verlaag|lower|cut|trim|downgrade)/],
+    [/\b(sell|underperform|strong sell)\b/, /\b(koop|strong buy|outperform)\b/],
+    [/\b(strong buy|outperform|overweight)\b/, /\b(verkoop|underperform)\b/]
+  ];
+  return pairs.some(([srcRe, badRe]) => srcRe.test(s) && badRe.test(b) && !srcRe.test(b));
+}
+
+function dropsAllNumbers(blurb, source) {
+  const nums = (String(source).match(/\d+(?:[.,]\d+)?/g) || [])
+    .filter(n => Number(String(n).replace(',', '.')) >= 5);
+  if (nums.length < 2) return false;
+  return !nums.some(n => {
+    const variants = [n, n.replace(',', '.'), n.replace('.', ',')];
+    return variants.some(v => String(blurb).includes(v));
+  });
+}
+
+function snippetFrom(item) {
+  const t = String(item.text || item.summary || '').replace(/\s+/g, ' ').trim();
+  if (!isUsefulText(t, item.title) || /comprehensive up-to-date news coverage/i.test(t)) return '';
+  const sentences = t.match(/[^.!?]+[.!?]+/g);
+  if (!sentences?.length) return t.length <= 420 ? t : '';
+  let out = '';
+  for (const s of sentences) {
+    const next = `${out} ${s}`.trim();
+    if (out && next.length > 420) break;
+    out = next;
+    if (out.length >= 180) break;
+  }
+  return out || sentences[0].trim();
+}
+
+function polishSummary(raw, item, lang) {
+  let s = String(raw || '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/\$(\d+)\.\s+(\d)/g, '$$$1.$2').replace(/(\d+)\.\s+(\d+)\s+(miljoen|miljard|billion|million)/gi, '$1.$2 $3');
+  if (lang === 'nl') s = s.replace(/\b(\d+)\.(\d+)%/g, '$1,$2%');
+  if (/comprehensive up-to-date news coverage|aggregated from sources all over the world|join (us|developers|researchers)|register (now|for)|registration is open|#1 ai conference|hands-on workshops|gtc berlin/i.test(s)) s = '';
+  const sourceText = `${item.text || item.summary || ''}`;
+  const thin = s.length < 50 || (/\?$/.test(s) && s.length < 90) || wordOverlap(s, item.title) > 0.65;
+  if (!sourceText || sourceText.length < 40) return '';
+  if (/join (us|developers|researchers)|register (now|for)|registration is open|#1 ai conference|hands-on workshops|gtc berlin/i.test(sourceText)) return '';
+  if (!s || thin || inventedNumbers(s, sourceText) || contradictsSource(s, sourceText) || dropsAllNumbers(s, sourceText)) {
+    s = snippetFrom(item);
+  }
+  if (s && !/[.!?]$/.test(s)) {
+    const cut = s.match(/^[\s\S]+[.!?]/);
+    s = cut ? cut[0].trim() : s;
+  }
+  const parts = s.match(/[^.!?]+[.!?]+/g);
+  if (parts?.length > 1 && (parts[parts.length - 1].trim().length < 28 || /\$\d+\.$/.test(parts[parts.length - 1]))) {
+    s = parts.slice(0, -1).join(' ').trim();
+  }
+  return s;
+}
+
+function polishDigest(raw, items, lang) {
+  let s = String(raw || '').replace(/\s+/g, ' ').trim();
+  s = s.replace(/\$(\d+)\.\s+(\d)/g, '$$$1.$2').replace(/(\d+)\.\s+(\d+)\s+(miljoen|miljard|billion|million)/gi, '$1.$2 $3');
+  if (lang === 'nl') s = s.replace(/\b(\d+)\.(\d+)%/g, '$1,$2%');
+  const corpus = items.map(i => i.text || i.summary || '').join(' ');
+  if (corpus.length < 40) return '';
+  const useful = items.filter(i => isUsefulText(i.text || i.summary || '', i.title));
+  if (!s || /register (now|for)|gtc berlin|hands-on workshops|over 100 sessions/i.test(s) || inventedNumbers(s, corpus) || contradictsSource(s, corpus) || wordOverlap(s, items.map(i => i.title).join(' ')) > 0.7) {
+    s = useful.map(i => snippetFrom(i)).filter(Boolean).slice(0, 2).join(' ');
+  }
+  const sentences = s.match(/[^.!?]+[.!?]+/g);
+  if (!sentences?.length) return s.length <= 420 ? s : '';
+  return sentences.slice(0, 3).join(' ').trim();
+}
+
+export async function summarizeArticles(items, lang = 'en') {
+  const locale = normalizeLang(lang);
+  const list = (items || []).filter(a => a?.title);
+  if (!list.length) return [];
+
+  const system = locale === 'nl'
+    ? `Je geeft alleen geldige JSON. Geen markdown. Geen verzonnen feiten.
+TAAL: Nederlands. Elke samenvatting is 100% Nederlands, ook als het artikel Engels is.
+Cijfers met komma (1,32%).`
+    : `You output only valid JSON. No markdown. No invented facts.
+LANGUAGE: English. Each summary is 100% English.`;
+
+  const prompt = locale === 'nl'
+    ? `Je krijgt de ARTIKELTEKST van elke bron (niet alleen de kop).
+Per bron: 1 of 2 VOLLEDIGE zinnen met alleen kernfeiten (wie, wat, welk cijfer). Nooit afkappen.
+Daarnaast DIGEST: 2 korte zinnen die de beleggersfeiten uit álle artikelen combineren. Geen event-uitnodigingen of promo.
+Niet de kop herhalen. Geen vage vraag. Niet omdraaien: lowers = verlaagt, raise = verhoogt.
+Gebruik ALLEEN de artikeltekst. Verzin niets. Event-landingpages zonder nieuws: samenvatting leeg.
+Als er geen artikeltekst is, laat die samenvatting leeg.
+
+ARTIKELEN:
+${articleLines(list)}
+
+Geef alleen JSON, evenveel summaries als artikelen, zelfde volgorde:
+{"digest":"...","summaries":["...","..."]}`
+    : `You get the ARTICLE TEXT of each source (not just the headline).
+Per source: 1 or 2 COMPLETE sentences with only the key facts (who, what, which number). Never truncate.
+Also DIGEST: 2 short sentences combining the investor facts from all articles. Skip event invites and promo pages.
+Do not restate the headline. No vague question. Do not flip meaning: lowers ≠ raises.
+Use ONLY the article text. Invent nothing. Event landing pages with no news: empty summary.
+If there is no article text, leave that summary empty.
+
+ARTICLES:
+${articleLines(list)}
+
+JSON only, same count and order:
+{"digest":"...","summaries":["...","..."]}`;
+
+  let summaries = [];
+  let digest = '';
+  try {
+    const raw = await chatJson([
+      { role: 'system', content: system },
+      { role: 'user', content: prompt }
+    ], { numPredict: 900, temperature: 0.2 });
+    summaries = Array.isArray(raw?.summaries) ? raw.summaries : [];
+    digest = String(raw?.digest || '');
+    const blob = `${digest} ${summaries.join(' ')}`;
+    if (blob.trim().length > 20 && !textMatchesLang(blob, locale)) {
+      const rewritten = await chatJson([
+        { role: 'system', content: system },
+        { role: 'user', content: locale === 'nl'
+          ? `Zet digest en elke samenvatting om naar natuurlijk Nederlands. Houd de feiten. Geen Engels. Alleen JSON.\n${JSON.stringify({ digest, summaries })}`
+          : `Rewrite digest and each summary in natural English. Keep the facts. No Dutch. JSON only.\n${JSON.stringify({ digest, summaries })}` }
+      ], { numPredict: 900, temperature: 0.15 });
+      if (Array.isArray(rewritten?.summaries)) summaries = rewritten.summaries;
+      if (rewritten?.digest) digest = String(rewritten.digest);
+    }
+  } catch {
+    return { summaries: list.map(() => ''), digest: '' };
+  }
+
+  return {
+    summaries: list.map((item, i) => polishSummary(summaries[i], item, locale)),
+    digest: polishDigest(digest, list, locale)
+  };
 }
 
 export async function decideTrade(ctx) {

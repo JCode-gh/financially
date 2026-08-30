@@ -250,7 +250,10 @@ export async function runScan(symbols) {
 
 async function attachHeadlines(results) {
   const need = results.filter(r =>
-    (r.actionable || r.quality === 'watch') && !(r.headlines && r.headlines.length)
+    (r.actionable || r.quality === 'watch') && (
+      !(r.headlines && r.headlines.length) ||
+      r.headlines.some(h => typeof h === 'object' && !h.url)
+    )
   ).slice(0, 12);
   if (!need.length) return results;
 

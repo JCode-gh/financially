@@ -29,10 +29,16 @@
   .glow-bull { text-shadow: 0 0 20px rgba(0, 255, 136, 0.5); }
 }
 
-/* Ticker animation */
+/* Ticker animation — pause from the still wrap so hover hit-testing
+   does not run on the translating strip (that makes items drift left). */
 .ticker-wrap { overflow: hidden; }
-.ticker-content { display: inline-flex; animation: ticker 60s linear infinite; white-space: nowrap; }
-.ticker-content:hover { animation-play-state: paused; }
+.ticker-content {
+  display: inline-flex;
+  animation: ticker 60s linear infinite;
+  white-space: nowrap;
+  will-change: transform;
+}
+.ticker-wrap:hover .ticker-content { animation-play-state: paused; }
 @keyframes ticker { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
 
 /* Pulse dot */

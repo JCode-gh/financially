@@ -120,11 +120,11 @@
             </div>
 
             <p class="mt-1.5 text-sm text-gray-300 leading-snug">
-              {{ pickHeadline(o) }}
+              <SourceLink :href="pickLead(o).url" :text="pickLead(o).title" />
             </p>
-            <ul v-if="pickNewsLines(o).length" class="mt-1.5 space-y-1">
-              <li v-for="line in pickNewsLines(o)" :key="line" class="text-xs text-gray-400 leading-snug">
-                {{ line }}
+            <ul v-if="pickNewsItems(o).length" class="mt-1.5 space-y-1">
+              <li v-for="item in pickNewsItems(o)" :key="item.title" class="text-xs text-gray-400 leading-snug">
+                <SourceLink :href="item.url" :text="item.title" />
               </li>
             </ul>
             <div v-if="pickWhy(o).catalysts.length" class="mt-1.5 flex flex-wrap gap-1">
@@ -156,7 +156,9 @@
           <div v-if="expanded === o.ticker" class="mt-3 space-y-3">
             <template v-if="ui.isSimple">
               <ul v-if="simpleWhy(o).length" class="space-y-1">
-                <li v-for="line in simpleWhy(o)" :key="line" class="text-sm text-gray-300 leading-relaxed">{{ line }}</li>
+                <li v-for="line in simpleWhy(o)" :key="line.title" class="text-sm text-gray-300 leading-relaxed">
+                  <SourceLink :href="line.url" :text="line.title" />
+                </li>
               </ul>
               <div v-if="o.quality === 'watch' && simpleWhyNot(o).length">
                 <p class="text-xs font-mono text-gray-500 mb-1">{{ $t('picks.whyNotYet') }}</p>
@@ -168,7 +170,9 @@
 
             <template v-else>
               <ul v-if="simpleWhy(o).length" class="space-y-1">
-                <li v-for="line in simpleWhy(o)" :key="line" class="text-sm text-gray-300 leading-relaxed">{{ line }}</li>
+                <li v-for="line in simpleWhy(o)" :key="line.title" class="text-sm text-gray-300 leading-relaxed">
+                  <SourceLink :href="line.url" :text="line.title" />
+                </li>
               </ul>
               <p v-if="o.flags?.length" class="text-xs font-mono text-gray-500">
                 {{ o.actionable ? $t('picks.notes') : $t('picks.notActionable') }}: {{ o.flags.map(simpleFlag).join(' · ') }}
@@ -202,7 +206,8 @@ import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { useScannerStore } from '../stores/scannerStore.js';
 import { useUiStore } from '../stores/uiStore.js';
-import { pickHeadline, pickNewsLines, pickWhy, simpleFlag, earningsLine, shortSentence } from '../utils/picks.js';
+import { pickLead, pickNewsItems, pickWhy, simpleFlag, earningsLine, shortSentence } from '../utils/picks.js';
+import SourceLink from '../components/news/SourceLink.vue';
 
 const router = useRouter();
 const scanner = useScannerStore();
@@ -260,8 +265,11 @@ function hasLevels(o) {
 
 function simpleWhy(o) {
   const why = pickWhy(o);
-  const head = pickHeadline(o);
-  return [...why.headlines, ...why.lines].filter(line => line && line !== head && shortSentence(line, 120) !== head);
+  const head = pickLead(o);
+  return [
+    ...why.headlines.filter(h => h.title !== head.title && shortSentence(h.title, 120) !== head.title),
+    ...why.lines.filter(line => line && line !== head.title).map(title => ({ title, url: '' }))
+  ];
 }
 
 function simpleWhyNot(o) {

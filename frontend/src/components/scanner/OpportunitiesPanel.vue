@@ -102,7 +102,9 @@
 
         <!-- Top reason + entry/stop/target -->
         <div class="flex items-center gap-2 mt-0.5 pl-6 text-[10px] font-mono text-gray-500">
-          <span class="truncate flex-1" :title="pickHeadline(o)">{{ pickHeadline(o) }}</span>
+          <span class="truncate flex-1" :title="pickLead(o).title">
+            <SourceLink :href="pickLead(o).url" :text="pickLead(o).title" />
+          </span>
           <span v-if="o.entry && o.action !== 'HOLD'" class="flex-shrink-0 text-gray-400 hidden md:inline">
             in {{ fmt(o.entry) }} · stop {{ fmt(o.stop) }} · tgt {{ fmt(o.target) }}
           </span>
@@ -121,7 +123,8 @@
 import { computed, ref } from 'vue';
 import { useScannerStore } from '../../stores/scannerStore.js';
 import { useMarketStore } from '../../stores/marketStore.js';
-import { pickHeadline } from '../../utils/picks.js';
+import { pickLead } from '../../utils/picks.js';
+import SourceLink from '../news/SourceLink.vue';
 import AccuracyTracker from '../predictions/AccuracyTracker.vue';
 
 const scanner = useScannerStore();

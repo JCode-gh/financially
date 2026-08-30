@@ -17,7 +17,7 @@ const EVENT_PATTERNS = [
   { id: 'downgrade', label: 'Analyst Downgrade', impact: -1.7, re: /\bdowngrade[ds]?\b|cut to (sell|underweight|underperform|neutral|hold)|price target (cut|lowered|slashed|reduced|trimmed)/i },
 
   // Corporate actions
-  { id: 'mna', label: 'M&A / Takeover', impact: 1.8, re: /\b(acquir(es?|ed|ing|sition)|merger|takeover|buyout|tender offer)\b|to (buy|purchase) .{0,40} for \$|\bgoes? private\b/i },
+  { id: 'mna', label: 'M&A / Takeover', impact: 1.8, re: /\b(acquir(es?|ed|ing|sition)|merger|takeover|buyout|tender offer)\b|to (buy|purchase) .{0,40} for \$|(agrees?|agreed|reportedly) .{0,28}(buy|acquire|purchase)|buying .{0,36} for \$[\d.]+|why .{0,80}\b(deal|acquisition|merger)\b|\bgoes? private\b/i },
   { id: 'buyback', label: 'Buyback', impact: 1.3, re: /\b(buyback|share repurchase|repurchase program)\b/i },
   { id: 'dividend_up', label: 'Dividend Raise', impact: 1.0, re: /\b(raises?|raised|hikes?|hiked|boosts?|increases?)\b.{0,25}\bdividend\b|dividend (increase|hike|raise)|special dividend/i },
   { id: 'dividend_cut', label: 'Dividend Cut', impact: -2.2, re: /\b(cuts?|cut|suspends?|suspended|slashe?s?d?|eliminates?)\b.{0,25}\bdividend\b/i },
@@ -35,6 +35,10 @@ const EVENT_PATTERNS = [
   { id: 'bankruptcy', label: 'Bankruptcy Risk', impact: -3.5, re: /\bbankruptcy\b|chapter 11|chapter 7|insolven(t|cy)|going.?concern (doubt|warning)|debt restructuring/i },
   { id: 'short_report', label: 'Short-Seller Report', impact: -2.4, re: /short.?sellers? (report|target)|hindenburg|muddy waters|citron research|kerrisdale|short report/i },
   { id: 'insider_buy', label: 'Insider Buying', impact: 1.1, re: /insiders? (buy(s|ing)?|bought|purchas(es?|ed|ing))|(ceo|cfo|director) (buys?|bought|purchas(es|ed))/i },
+  { id: 'insider_sell', label: 'Insider Selling', impact: -1.1, re: /insiders? (sell|sold|selling)|been selling stock|(ceo|cfo|director|president) (sells?|sold) .{0,20}(shares|stock)/i },
+  { id: 'forecast_print', label: 'Outlook / Forecast', impact: 1.8, re: /year-ahead forecast|first-ever .{0,24}forecast|project(s|ing|ed)? \$\d[\d.,]* .{0,28}(billion|million).{0,24}revenue|(70|60|50|40)% growth|revenue guidance|blowout quarter/i },
+  { id: 'mega_deal', label: 'Large Deal', impact: 1.6, re: /\$\d[\d.,]*\s*(billion|bn)\b.{0,40}\b(deal|acquisition|acquire|buy|stake|investment)\b|\b(deal|acquisition|stake)\b.{0,40}\$\d[\d.,]*\s*(billion|bn)\b/i },
+  { id: 'capacity_order', label: 'Large Order / Capacity', impact: 1.5, re: /\d[\d,]* million (additional )?(gpus?|chips|accelerators)|next-generation infrastructure for .{0,20}ai|strategic collaboration to meet .{0,24}demand/i },
 
   // Growth catalysts
   { id: 'contract_win', label: 'Contract Win', impact: 1.4, re: /\bwins?\b.{0,25}\b(contract|order|deal)\b|awarded .{0,30}contract|secures? .{0,25}(contract|order|deal)/i },
@@ -275,6 +279,15 @@ function headlineText(article) {
   return String(article?.headline || article?.title || '').replace(/\s+/g, ' ').trim();
 }
 
+export function articleUrl(article) {
+  const raw = String(article?.url || article?.link || article?.href || '').trim();
+  try {
+    const u = new URL(raw);
+    if (u.protocol === 'http:' || u.protocol === 'https:') return u.toString();
+  } catch { /* ignore */ }
+  return '';
+}
+
 function headlineKey(title) {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 48);
 }
@@ -323,6 +336,7 @@ export function pickDecisionHeadlines(news, direction = 1, limit = 2, ticker = '
     scored.push({
       title: title.length > 140 ? `${title.slice(0, 137).trimEnd()}…` : title,
       source: article.source || '',
+      url: articleUrl(article),
       publishedAt: article.publishedAt || null,
       score
     });
@@ -330,5 +344,5 @@ export function pickDecisionHeadlines(news, direction = 1, limit = 2, ticker = '
 
   scored.sort((a, b) => b.score - a.score);
   return scored.filter(h => h.score > 0.55).slice(0, limit)
-    .map(({ title, source, publishedAt }) => ({ title, source, publishedAt }));
+    .map(({ title, source, url, publishedAt }) => ({ title, source, url, publishedAt }));
 }

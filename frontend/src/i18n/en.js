@@ -71,8 +71,8 @@ export default {
     apiDown: 'API down',
     live: 'LIVE',
     idle: 'IDLE',
-    llama: 'Llama 3.2',
-    llamaOff: 'Llama off',
+    llama: 'Qwen 2.5',
+    llamaOff: 'Qwen off',
     quotes: 'Quotes {ago}',
     modelIter: 'Model iter {n}',
     us: 'US {session}'
@@ -117,16 +117,17 @@ export default {
     rerun: 'Re-run',
     readingShort: 'Working…',
     reading: 'Analyzing {symbol}…',
-    readingPro: 'Llama 3.2 is analyzing {symbol}…',
+    readingPro: 'Qwen 2.5 is analyzing {symbol}…',
     analyzingTitle: 'Analyzing {symbol}',
     analyzingTape: 'Price and trend',
     analyzingNews: 'News and sentiment',
-    analyzingModel: 'Llama weighing the data',
+    analyzingModel: 'Qwen weighing the data',
     analyzingCall: 'Forming the call',
-    llamaMeta: 'Llama 3.2 · {pct}%',
+    llamaMeta: 'Qwen 2.5 · {pct}%',
     newsVsTape: 'news vs tape',
     headlines: '{n} headlines',
-    llamaOffline: 'Llama offline — {reason}',
+    sources: 'Sources',
+    llamaOffline: 'Qwen offline — {reason}',
     quantOnly: 'quant only',
     fallbackBuy: '{symbol} has a measurable long edge — technicals lean bullish.',
     fallbackSell: '{symbol} has a measurable short edge — technicals lean bearish.',
@@ -293,7 +294,9 @@ export default {
   },
   chart: {
     by: 'by {date}',
-    retrying: 'Retrying ({n})…'
+    retrying: 'Retrying ({n})…',
+    enlarge: 'Enlarge chart',
+    shrink: 'Exit full chart'
   },
   setup: {
     title: 'Setup — {symbol}',

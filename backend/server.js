@@ -21,5 +21,6 @@ const server = app.listen(config.port, () => {
 initLiveStream(server);
 startScheduler();
 pingOllama().then(s => {
-  logger.info(`Ollama ${s.ok ? 'ready' : 'offline'} (${s.model})`);
+  const extra = s.wanted && s.model !== s.wanted ? ` (wanted ${s.wanted})` : '';
+  logger.info(`Ollama ${s.ok ? 'ready' : 'offline'} (${s.model})${extra}`);
 });

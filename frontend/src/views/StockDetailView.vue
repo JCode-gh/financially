@@ -46,6 +46,10 @@
       <StockChart :symbol="symbol" hide-quote />
     </div>
 
+    <div v-if="digest || sources.length" class="flex-shrink-0 px-4 sm:px-5 py-3 border-t border-surface-300 max-h-[40vh] overflow-y-auto overscroll-contain">
+      <SourceList :items="sources" :digest="digest" :heading="$t('verdict.sources')" />
+    </div>
+
     <TradeSetupModal
       :visible="showTradeSetup"
       :symbol="symbol"
@@ -64,6 +68,7 @@ import { formatPrice, formatPct } from '../utils/format.js';
 import StockChart from '../components/stocks/StockChart.vue';
 import StockVerdict from '../components/predictions/StockVerdict.vue';
 import TradeSetupModal from '../components/predictions/TradeSetupModal.vue';
+import SourceList from '../components/news/SourceList.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -78,6 +83,16 @@ const quote = computed(() =>
 const generating = computed(() => predictionStore.generating);
 const onList = computed(() => marketStore.isOnWatchlist(symbol.value));
 const showTradeSetup = ref(false);
+
+function desk() {
+  const key = symbol.value;
+  return predictionStore.currentPrediction?.ticker === key
+    ? predictionStore.currentPrediction
+    : predictionStore.byTicker?.[key];
+}
+
+const sources = computed(() => (desk()?.sources || []).filter(s => s?.title && s?.url));
+const digest = computed(() => String(desk()?.sourcesDigest || '').trim());
 
 function goBack() {
   if (window.history.length > 1) router.back();

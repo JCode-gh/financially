@@ -24,6 +24,13 @@
           <ul v-if="verdict.why.length" class="space-y-1">
             <li v-for="(w, i) in verdict.why" :key="i" class="text-sm text-gray-300 leading-relaxed">{{ w }}</li>
           </ul>
+          <SourceList
+            v-if="verdict.digest || verdict.sources.length"
+            class="mt-2"
+            :items="verdict.sources"
+            :digest="verdict.digest"
+            compact
+          />
           <p v-if="verdict.risks.length" class="text-xs font-mono text-neutral">
             {{ $t('verdict.risk', { text: verdict.risks.join(' · ') }) }}
           </p>
@@ -112,6 +119,7 @@ import { useMarketStore } from '../../stores/marketStore.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { formatPrice } from '../../utils/format.js';
 import { simpleReasons } from '../../utils/picks.js';
+import SourceList from '../news/SourceList.vue';
 
 const open = ref(false);
 const analyzeTick = ref(0);
@@ -216,7 +224,9 @@ const verdict = computed(() => {
         : (pred.aiError ? t('verdict.llamaOffline', { reason: pred.reasons?.[0] || t('verdict.quantOnly') }) : pred.reasons?.[0] || null)),
     why,
     risks,
-    canExpand: !!(headline || why.length || risks.length)
+    sources: (pred.sources || []).filter(s => s?.title && s?.url).slice(0, 5),
+    digest: String(pred.sourcesDigest || '').trim(),
+    canExpand: !!(headline || why.length || risks.length || pred.sourcesDigest)
   };
 });
 

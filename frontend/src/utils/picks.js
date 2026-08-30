@@ -125,39 +125,58 @@ export function eventLabel(ev) {
   return out === key ? (ev.label || String(id)) : out;
 }
 
+export function normalizeHeadline(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    const title = raw.replace(/^Headline:\s*/i, '').trim();
+    return title ? { title, url: '', source: '' } : null;
+  }
+  const title = String(raw.title || raw.headline || '').replace(/^Headline:\s*/i, '').trim();
+  if (!title) return null;
+  return { title, url: raw.url || raw.link || '', source: raw.source || '' };
+}
+
 export function pickWhy(o) {
-  const headlines = (o.headlines || [])
-    .map(h => (typeof h === 'string' ? h : h?.title) || '')
-    .map(s => s.replace(/^Headline:\s*/i, '').trim())
-    .filter(Boolean);
-  const fromReasons = (o.reasons || [])
-    .filter(r => /^Headline:/i.test(String(r)))
-    .map(r => String(r).replace(/^Headline:\s*/i, '').trim());
-  const uniqueHeadlines = [...new Set([...headlines, ...fromReasons])];
+  const seen = new Set();
+  const headlines = [];
+  for (const raw of [...(o.headlines || []), ...(o.reasons || []).filter(r => /^Headline:/i.test(String(r)))]) {
+    const h = normalizeHeadline(raw);
+    if (!h) continue;
+    const key = h.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 48);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    headlines.push(h);
+  }
 
   const lines = simpleReasons(nonEarningsReasons(
     (o.reasons || []).filter(r => !/^Headline:/i.test(String(r)))
   )).filter(line => line && !isGenericPickLine(line));
 
   const catalysts = (o.events || []).map(eventLabel).filter(Boolean);
-  return { headlines: uniqueHeadlines, lines, catalysts };
+  return { headlines, lines, catalysts };
+}
+
+export function pickLead(o) {
+  const why = pickWhy(o);
+  if (why.headlines[0]) {
+    return { ...why.headlines[0], title: shortSentence(why.headlines[0].title, 120) };
+  }
+  if (why.catalysts[0]) return { title: t('picks.becauseEvent', { event: why.catalysts[0] }), url: '' };
+  if (why.lines[0]) return { title: why.lines[0], url: '' };
+  if (o.action === 'BUY') return { title: t('picks.headlineBuy'), url: '' };
+  if (o.action === 'SELL') return { title: t('picks.headlineSell'), url: '' };
+  if (o.quality === 'watch') return { title: t('picks.headlineWatch'), url: '' };
+  return { title: t('picks.headlineNone'), url: '' };
 }
 
 export function pickHeadline(o) {
-  const why = pickWhy(o);
-  if (why.headlines[0]) return shortSentence(why.headlines[0], 120);
-  if (why.catalysts[0]) return t('picks.becauseEvent', { event: why.catalysts[0] });
-  if (why.lines[0]) return why.lines[0];
-  if (o.action === 'BUY') return t('picks.headlineBuy');
-  if (o.action === 'SELL') return t('picks.headlineSell');
-  if (o.quality === 'watch') return t('picks.headlineWatch');
-  return t('picks.headlineNone');
+  return pickLead(o).title;
 }
 
-export function pickNewsLines(o) {
+export function pickNewsItems(o) {
   const why = pickWhy(o);
-  const lead = pickHeadline(o);
-  return why.headlines.filter(h => h !== lead && shortSentence(h, 120) !== lead).slice(0, 2);
+  const lead = pickLead(o);
+  return why.headlines.filter(h => h.title !== lead.title && shortSentence(h.title, 120) !== lead.title).slice(0, 2);
 }
 
 export function simpleFlag(flag) {

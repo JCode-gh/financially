@@ -71,8 +71,8 @@ export default {
     apiDown: 'API uit',
     live: 'LIVE',
     idle: 'IDLE',
-    llama: 'Llama 3.2',
-    llamaOff: 'Llama uit',
+    llama: 'Qwen 2.5',
+    llamaOff: 'Qwen uit',
     quotes: 'Koersen {ago}',
     modelIter: 'Model iter {n}',
     us: 'VS {session}'
@@ -117,16 +117,17 @@ export default {
     rerun: 'Opnieuw',
     readingShort: 'Bezig…',
     reading: '{symbol} analyseren…',
-    readingPro: 'Llama 3.2 analyseert {symbol}…',
+    readingPro: 'Qwen 2.5 analyseert {symbol}…',
     analyzingTitle: '{symbol} analyseren',
     analyzingTape: 'Koers en trend',
     analyzingNews: 'Nieuws en sentiment',
-    analyzingModel: 'Llama weegt de data',
+    analyzingModel: 'Qwen weegt de data',
     analyzingCall: 'Advies formuleren',
-    llamaMeta: 'Llama 3.2 · {pct}%',
+    llamaMeta: 'Qwen 2.5 · {pct}%',
     newsVsTape: 'nieuws vs tape',
     headlines: '{n} koppen',
-    llamaOffline: 'Llama offline — {reason}',
+    sources: 'Bronnen',
+    llamaOffline: 'Qwen offline — {reason}',
     quantOnly: 'alleen model',
     fallbackBuy: '{symbol} heeft een meetbaar koopvoordeel — de technische signalen zijn positief.',
     fallbackSell: '{symbol} heeft een meetbaar verkoopvoordeel — de technische signalen zijn negatief.',
@@ -293,7 +294,9 @@ export default {
   },
   chart: {
     by: 'tot {date}',
-    retrying: 'Opnieuw ({n})…'
+    retrying: 'Opnieuw ({n})…',
+    enlarge: 'Grafiek vergroten',
+    shrink: 'Grafiek sluiten'
   },
   setup: {
     title: 'Setup — {symbol}',

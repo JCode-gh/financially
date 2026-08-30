@@ -2,7 +2,8 @@ import { getDB } from '../db/database.js';
 import { getHistoricalSeries } from './historyProvider.js';
 import { getQuote } from '../providers/marketData.js';
 import { getStockArticles } from '../providers/news.js';
-import { decideTrade } from './ollama.js';
+import { decideTrade, summarizeArticles } from './ollama.js';
+import { enrichArticles, fallbackSnippet, isPriceMovingArticle, isUsefulText, pickSourceArticles } from '../lib/articleBody.js';
 import { logger } from '../lib/logger.js';
 import { createTtlCache } from '../lib/cache.js';
 import {
@@ -100,44 +101,107 @@ function reconcileAi(ai, result, articles, lang = 'en') {
   return ai;
 }
 
+function sourceFields(a) {
+  return {
+    title: a.headline || a.title || '',
+    url: a.url || a.link || '',
+    source: a.source || '',
+    text: String(a.body || '').replace(/\s+/g, ' ').trim()
+  };
+}
+
+function packSources(items, summaries = [], digest = '') {
+  return {
+    digest: String(digest || '').trim(),
+    sources: items.map((s, i) => ({
+      title: s.title,
+      url: s.url,
+      source: s.source,
+      summary: String(summaries[i] || fallbackSnippet(s.text, s.title)).trim()
+    }))
+  };
+}
+
+async function finishSources(articles, lang, ticker = '') {
+  const items = (articles || [])
+    .filter(a => isPriceMovingArticle(a, ticker) && isUsefulText(a.body || a.text || a.summary || '', a.headline || a.title || ''))
+    .map(sourceFields)
+    .filter(s => s.title && s.url && !/news\.google\.com\/search\?/i.test(s.url));
+  if (!items.length) return { digest: '', sources: [] };
+  const raw = await summarizeArticles(items, lang).catch(() => ({ summaries: [], digest: '' }));
+  const summaries = Array.isArray(raw) ? raw : (raw.summaries || []);
+  const digest = Array.isArray(raw) ? '' : (raw.digest || '');
+  return packSources(items, summaries, digest);
+}
+
 async function attachAiDecision(result, articles, name, quote, lang = 'en') {
+  const picked = pickSourceArticles(articles, result.ticker);
+  const enrichPromise = enrichArticles(picked, articles, result.ticker);
   try {
     const five = fiveDayFrom(result);
     const plan = result.tradePlan;
-    const ai = await decideTrade({
-      ticker: result.ticker,
-      name,
-      price: result.indicators?.price,
-      dayChange: quote?.changePct,
-      trend: result.trend?.label,
-      rsi: result.indicators?.rsi,
-      adx: result.indicators?.adx,
-      week52: result.indicators?.week52Position,
-      support: result.indicators?.support,
-      resistance: result.indicators?.resistance,
-      fiveDay: five,
-      tradePlan: plan ? `${plan.direction} entry ${plan.entry} stop ${plan.stop} target ${plan.target} R:R ${plan.rr}` : 'none',
-      signals: result.signals,
-      newsLabel: result.newsSentiment?.label,
-      newsScore: result.newsSentiment?.score,
-      events: (result.newsSentiment?.topEvents || []).map(e => e.label),
-      headlines: (articles || []).slice(0, 8).map(a => ({
-        headline: a.headline,
-        summary: (a.summary || '').slice(0, 160)
-      })),
-      reasons: result.reasons,
-      lang
-    });
-    return { ...result, ai: reconcileAi(ai, result, articles, lang), newsUsed: (articles || []).length };
+    const [ai, enriched] = await Promise.all([
+      decideTrade({
+        ticker: result.ticker,
+        name,
+        price: result.indicators?.price,
+        dayChange: quote?.changePct,
+        trend: result.trend?.label,
+        rsi: result.indicators?.rsi,
+        adx: result.indicators?.adx,
+        week52: result.indicators?.week52Position,
+        support: result.indicators?.support,
+        resistance: result.indicators?.resistance,
+        fiveDay: five,
+        tradePlan: plan ? `${plan.direction} entry ${plan.entry} stop ${plan.stop} target ${plan.target} R:R ${plan.rr}` : 'none',
+        signals: result.signals,
+        newsLabel: result.newsSentiment?.label,
+        newsScore: result.newsSentiment?.score,
+        events: (result.newsSentiment?.topEvents || []).map(e => e.label),
+        headlines: (articles || []).slice(0, 8).map(a => ({
+          headline: a.headline,
+          summary: (a.summary || '').slice(0, 160),
+          url: a.url || a.link || '',
+          source: a.source || ''
+        })),
+        reasons: result.reasons,
+        lang
+      }),
+      enrichPromise
+    ]);
+    const packed = await finishSources(enriched, lang, result.ticker);
+    return {
+      ...result,
+      ai: reconcileAi(ai, result, articles, lang),
+      newsUsed: (articles || []).length,
+      sourcesDigest: packed.digest,
+      sources: packed.sources
+    };
   } catch (err) {
     logger.warn(`Ollama decision skipped: ${err.message}`);
-    return { ...result, ai: null, aiError: err.message, newsUsed: (articles || []).length };
+    const enriched = await enrichPromise.catch(() => picked);
+    const packed = await finishSources(enriched, lang, result.ticker).catch(() => packSources(
+      picked.map(a => ({
+        title: a.headline || a.title || '',
+        url: a.url || a.link || '',
+        source: a.source || '',
+        text: a.summary || a.description || ''
+      })).filter(s => s.title && s.url)
+    ));
+    return {
+      ...result,
+      ai: null,
+      aiError: err.message,
+      newsUsed: (articles || []).length,
+      sourcesDigest: packed.digest,
+      sources: packed.sources
+    };
   }
 }
 
 export async function generateForTicker(ticker, name, { force, lang = 'en' } = {}) {
   const locale = lang === 'nl' ? 'nl' : 'en';
-  const key = `desk_${ticker}_${locale}_v5`;
+  const key = `desk_${ticker}_${locale}_v18`;
   if (force) genCache.cache.delete(key);
   return genCache.cached(key, GEN_TTL_MS, async () => {
     const { candles, articles, name: resolvedName, quote } = await loadModelInputs(ticker, name);

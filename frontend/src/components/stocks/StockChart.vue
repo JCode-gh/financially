@@ -1,11 +1,21 @@
 <template>
-  <div class="card flex flex-col h-full overflow-hidden">
+  <Teleport to="body">
+    <div
+      v-if="expanded"
+      class="fixed inset-0 z-[60] bg-black/70"
+      @click="setExpanded(false)"
+    />
+  </Teleport>
+  <div
+    class="card flex flex-col overflow-hidden"
+    :class="expanded ? 'fixed inset-3 sm:inset-4 z-[70] shadow-2xl' : 'h-full'"
+  >
     <!-- Header -->
     <div
       class="flex items-center px-3 py-2 border-b border-surface-300 flex-shrink-0 gap-1.5 sm:gap-2"
-      :class="hideQuote ? 'justify-end' : 'flex-col sm:flex-row sm:justify-between'"
+      :class="hideQuote && !expanded ? 'justify-end' : 'flex-col sm:flex-row sm:justify-between'"
     >
-      <div v-if="!hideQuote" class="flex items-center gap-2 sm:gap-3 min-w-0 w-full sm:w-auto">
+      <div v-if="!hideQuote || expanded" class="flex items-center gap-2 sm:gap-3 min-w-0 w-full sm:w-auto">
         <div class="truncate">
           <span class="font-mono text-sm font-bold text-white">{{ quote?.symbol || symbol }}</span>
           <span class="text-gray-500 text-xs ml-2 hidden lg:inline">{{ quote?.name }}</span>
@@ -28,6 +38,20 @@
           :class="activeTf === tf.label ? 'bg-accent/20 text-accent' : 'text-gray-500 hover:text-gray-300'"
         >
           {{ tf.label }}
+        </button>
+        <button
+          type="button"
+          class="ml-1 p-1 rounded text-gray-500 hover:text-accent hover:bg-accent/10 transition-colors"
+          :aria-label="expanded ? $t('chart.shrink') : $t('chart.enlarge')"
+          :title="expanded ? $t('chart.shrink') : $t('chart.enlarge')"
+          @click="setExpanded(!expanded)"
+        >
+          <svg v-if="expanded" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" />
+          </svg>
+          <svg v-else class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+          </svg>
         </button>
       </div>
     </div>
@@ -79,7 +103,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
+import { computed, nextTick, ref, watch, onMounted, onUnmounted } from 'vue';
 import { createChart, CrosshairMode, ColorType } from 'lightweight-charts';
 import { useMarketStore } from '../../stores/marketStore.js';
 import { usePredictionStore } from '../../stores/predictionStore.js';
@@ -105,6 +129,7 @@ const timeframes = [
   { label: '1Y', interval: '1day', count: 252 }
 ];
 const activeTf = ref('1Y');
+const expanded = ref(false);
 const priceFlash = ref('');
 let prevPrice = null;
 
@@ -210,8 +235,57 @@ function clearPredictionOverlay() {
   try { candleSeries?.setMarkers([]); } catch { /* ignore */ }
 }
 
+function resizeChart() {
+  const el = chartContainer.value;
+  if (!el || !chart) return;
+  const r = el.getBoundingClientRect();
+  const w = Math.floor(r.width);
+  const h = Math.floor(r.height);
+  if (w > 0 && h > 0) chart.applyOptions({ width: w, height: h });
+}
+
+async function setExpanded(on) {
+  expanded.value = !!on;
+  document.body.classList.toggle('overflow-hidden', expanded.value);
+  await nextTick();
+  resizeChart();
+  chart?.timeScale().fitContent();
+}
+
+function onExpandKey(e) {
+  if (e.key === 'Escape' && expanded.value) setExpanded(false);
+}
+
 function dateToUnix(dateStr) {
   return Math.floor(Date.parse(dateStr + 'T00:00:00Z') / 1000);
+}
+
+function nextSessionUnix(lastTime) {
+  const d = new Date(lastTime * 1000);
+  do {
+    d.setUTCDate(d.getUTCDate() + 1);
+  } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
+  return Math.floor(d.getTime() / 1000);
+}
+
+function tradingDaysAhead(lastTime, days) {
+  let t = lastTime;
+  for (let i = 0; i < days; i++) t = nextSessionUnix(t);
+  return t;
+}
+
+function easeInPath(startTime, endTime, startPrice, endPrice) {
+  const span = endTime - startTime;
+  const points = [];
+  const seen = new Set();
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    const time = startTime + Math.round(span * t);
+    if (seen.has(time)) continue;
+    seen.add(time);
+    points.push({ time, value: startPrice + (endPrice - startPrice) * t * t });
+  }
+  return points;
 }
 
 function formatShortDate(dateStr) {
@@ -227,7 +301,7 @@ function predictionTargets() {
   return pred.predictions.filter(p => p.targetPrice);
 }
 
-function applyScaleForTargets(targets) {
+function applyScaleForTargets(targets, currentPrice) {
   if (!candleSeries) return;
   const prices = targets.map(p => p.targetPrice).filter(n => n != null);
   candleSeries.applyOptions({
@@ -240,8 +314,11 @@ function applyScaleForTargets(targets) {
         if (p < min) min = p;
         if (p > max) max = p;
       }
-      const pad = Math.max((max - min) * 0.06, 0.5);
-      return { priceRange: { minValue: min - pad, maxValue: max + pad } };
+      const mid = currentPrice ?? (min + max) / 2;
+      const span = Math.max(max - min, 1);
+      const move = Math.max(...prices.map(p => Math.abs(p - mid)));
+      const head = Math.max(span * 0.08, move * 1.35);
+      return { priceRange: { minValue: min - span * 0.05, maxValue: max + head } };
     }
   });
 }
@@ -258,17 +335,17 @@ function applyPredictionOverlay(candles) {
 
   const currentPrice = candles[candles.length - 1].close;
   const lastTime = candles[candles.length - 1].time;
-  const forecastPoints = [{ time: lastTime, value: currentPrice }];
-  const markers = [];
+  const startTime = nextSessionUnix(lastTime);
+  const horizonDays = { '1d': 1, '5d': 5, '30d': 30 };
   const currency = quote.value?.currency;
-
-  for (const p of [...targets].sort((a, b) => {
+  const sorted = [...targets].sort((a, b) => {
     const order = { '1d': 1, '5d': 2, '30d': 3 };
     return (order[a.horizon] || 99) - (order[b.horizon] || 99);
-  })) {
+  });
+
+  for (const p of sorted) {
     const style = HORIZON_STYLE[p.horizon] || { color: '#8b949e', label: p.horizon };
     const target = p.targetPrice;
-
     const textColor = p.prediction === 'UP' ? 'text-bull' : p.prediction === 'DOWN' ? 'text-bear' : 'text-neutral';
     predictionLegend.value.push({
       horizon: p.horizon,
@@ -285,34 +362,23 @@ function applyPredictionOverlay(candles) {
       lineWidth: 1,
       lineStyle: 2,
       axisLabelVisible: true,
-      title: `${style.label} ${formatPrice(target, currency)}`
+      title: ''
     }));
-
-    if (p.targetDate) {
-      const t = dateToUnix(p.targetDate);
-      if (t > lastTime) {
-        forecastPoints.push({ time: t, value: target });
-        markers.push({
-          time: t,
-          position: p.prediction === 'DOWN' ? 'aboveBar' : 'belowBar',
-          color: style.color,
-          shape: 'circle',
-          text: `${style.label} ${formatPrice(target, currency)}`
-        });
-      }
-    }
   }
 
-  applyScaleForTargets(targets);
+  applyScaleForTargets(targets, currentPrice);
 
-  if (forecastPoints.length > 1) {
-    forecastPoints.sort((a, b) => a.time - b.time);
-    forecastSeries.setData(forecastPoints);
-  }
-  if (markers.length) {
-    candleSeries.setMarkers(markers);
-    chart.timeScale().applyOptions({ rightOffset: 15 });
-  }
+  // Path starts on the next unprinted session at the last close, then eases
+  // in toward the longest target so a 30-day move does not spike off the last bar.
+  const farthest = [...sorted].reverse().find(p => p.targetPrice != null);
+  if (!farthest) return;
+  const days = horizonDays[farthest.horizon] || 30;
+  const endTime = farthest.targetDate
+    ? Math.max(dateToUnix(farthest.targetDate), tradingDaysAhead(lastTime, days))
+    : tradingDaysAhead(lastTime, days);
+  if (endTime <= startTime) return;
+
+  forecastSeries.setData(easeInPath(startTime, endTime, currentPrice, farthest.targetPrice));
 }
 
 function activeTimeframe() {
@@ -355,6 +421,7 @@ function renderData() {
   lastBar = { ...candles[candles.length - 1] };
   applyPredictionOverlay(candles);
   chart.timeScale().fitContent();
+  chart.timeScale().applyOptions({ rightOffset: 8 });
 }
 
 async function loadTimeframe(tf) {
@@ -392,6 +459,7 @@ async function retryLoad() {
 
 onMounted(() => {
   buildChart();
+  window.addEventListener('keydown', onExpandKey);
   ro = new ResizeObserver(entries => {
     for (const e of entries) {
       const w = Math.floor(e.contentRect.width), h = Math.floor(e.contentRect.height);
@@ -412,6 +480,8 @@ watch(() => props.symbol, async (sym) => {
 onUnmounted(() => {
   loadGeneration++;
   clearAutoRetry();
+  document.body.classList.remove('overflow-hidden');
+  window.removeEventListener('keydown', onExpandKey);
   clearPredictionOverlay();
   ro?.disconnect();
   chart?.remove();
