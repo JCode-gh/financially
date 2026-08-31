@@ -42,11 +42,11 @@
 
     <StockVerdict :symbol="symbol" :loading="generating" />
 
-    <div class="min-h-[280px] h-[46vh] lg:h-auto lg:flex-1 lg:min-h-0 overflow-hidden p-3 pt-0">
-      <StockChart :symbol="symbol" hide-quote />
+    <div class="min-h-[280px] h-[46vh] lg:h-auto lg:flex-1 lg:min-h-0 overflow-hidden w-full">
+      <StockChart :symbol="symbol" hide-quote flush />
     </div>
 
-    <div v-if="digest || sources.length" class="flex-shrink-0 px-4 sm:px-5 py-3 border-t border-surface-300 max-h-[40vh] overflow-y-auto overscroll-contain">
+    <div v-if="digest || sources.length" class="flex-shrink-0 px-4 sm:px-5 py-3 border-t border-surface-300 max-h-[40vh] overflow-y-auto overscroll-contain w-full">
       <SourceList :items="sources" :digest="digest" :heading="$t('verdict.sources')" />
     </div>
 

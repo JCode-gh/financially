@@ -294,6 +294,8 @@ export default {
   },
   chart: {
     by: 'by {date}',
+    forecast: 'Forecast',
+    now: 'Now',
     retrying: 'Retrying ({n})…',
     enlarge: 'Enlarge chart',
     shrink: 'Exit full chart'
