@@ -1,4 +1,10 @@
-const backendRoot = (import.meta.env.VITE_BACKEND_API_URL || '').replace(/\/$/, '');
+const PRODUCTION_BACKEND = 'https://halo-wolf-seen-hint.trycloudflare.com';
+
+const backendRoot = (
+  import.meta.env.DEV
+    ? (import.meta.env.VITE_BACKEND_API_URL || '')
+    : PRODUCTION_BACKEND
+).replace(/\/$/, '');
 
 /** REST API base — `/api` on the backend host, or Vite proxy in local dev when unset. */
 export const API_BASE_URL = backendRoot ? `${backendRoot}/api` : '/api';
