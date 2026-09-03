@@ -61,7 +61,7 @@ export const useChatStore = defineStore('chat', () => {
     if (abort) abort.abort();
   }
 
-  async function send(text, { simple } = {}) {
+  async function send(text, { simple, watchlist } = {}) {
     const content = String(text || '').trim();
     if (!content || sending.value) return;
     error.value = '';
@@ -85,6 +85,7 @@ export const useChatStore = defineStore('chat', () => {
       await streamDeskChat({
         messages: history,
         symbol: focusSymbol.value,
+        watchlist,
         simple,
         lang: readLocale(),
         signal: abort.signal,

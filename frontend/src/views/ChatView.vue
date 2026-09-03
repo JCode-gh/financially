@@ -138,8 +138,8 @@ const suggestions = computed(() => {
   const items = [];
   if (sym) items.push({ id: 'move', text: t('chat.suggestions.move', { symbol: sym }) });
   items.push(
+    { id: 'buy', text: t('chat.suggestions.buy') },
     { id: 'market', text: t('chat.suggestions.market') },
-    { id: 'pe', text: t('chat.suggestions.pe') },
     { id: 'earnings', text: t('chat.suggestions.earnings') }
   );
   return items;
@@ -166,7 +166,7 @@ function submit() {
   const text = draft.value.trim();
   if (!text || chat.sending) return;
   draft.value = '';
-  chat.send(text, { simple: ui.isSimple });
+  chat.send(text, { simple: ui.isSimple, watchlist: market.allWatchlistSymbols });
 }
 
 function scrollBottom() {

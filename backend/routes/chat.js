@@ -38,6 +38,7 @@ router.post('/', rateLimit({ windowMs: 60_000, max: 12 }), asyncHandler(async (r
     const result = await runDeskChat({
       messages,
       symbol,
+      watchlist: req.body?.watchlist,
       lang,
       simple,
       signal: ac.signal,

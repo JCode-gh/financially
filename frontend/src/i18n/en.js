@@ -452,9 +452,10 @@ export default {
     askAbout: 'Ask about {symbol}',
     suggestions: {
       move: 'Why is {symbol} moving?',
+      buy: 'What does the desk want to buy right now?',
       pe: 'What does a P/E ratio tell me?',
-      market: 'What matters in the market today?',
-      earnings: 'What should I watch before earnings?'
+      market: 'What is the market regime today?',
+      earnings: 'Any earnings I should watch?'
     }
   }
 };

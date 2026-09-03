@@ -98,7 +98,7 @@ function parseSseBlock(block) {
   }
 }
 
-export async function streamDeskChat({ messages, symbol, simple, lang, onEvent, signal } = {}) {
+export async function streamDeskChat({ messages, symbol, watchlist, simple, lang, onEvent, signal } = {}) {
   const res = await fetch(`${API_BASE_URL}/chat`, {
     method: 'POST',
     headers: {
@@ -109,6 +109,7 @@ export async function streamDeskChat({ messages, symbol, simple, lang, onEvent, 
     body: JSON.stringify({
       messages,
       symbol: symbol || undefined,
+      watchlist: Array.isArray(watchlist) && watchlist.length ? watchlist : undefined,
       simple: simple !== false,
       lang: lang || readLocale()
     }),

@@ -452,9 +452,10 @@ export default {
     askAbout: 'Vraag over {symbol}',
     suggestions: {
       move: 'Waarom beweegt {symbol}?',
+      buy: 'Wat wil de desk nu kopen?',
       pe: 'Wat zegt een koers-winstverhouding?',
-      market: 'Wat speelt er vandaag op de markt?',
-      earnings: 'Waar let ik op voor cijfers?'
+      market: 'Wat is het marktregime nu?',
+      earnings: 'Welke cijfers moet ik in de gaten houden?'
     }
   }
 };

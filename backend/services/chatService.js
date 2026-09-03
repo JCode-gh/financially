@@ -1,7 +1,9 @@
 import { normalizeLang } from '../lib/locale.js';
-import { normalizeTicker } from '../lib/validate.js';
+import { normalizeTicker, parseSymbols } from '../lib/validate.js';
 import { getQuote } from '../providers/marketData.js';
 import { getStockNewsBundle } from '../providers/news.js';
+import { getLatestScan } from '../jobs/scanner.js';
+import { getMarketRegime } from '../models/marketRegime.js';
 import { peekDeskCall } from './predictionService.js';
 import { currentOllamaModel, currentSearchModel } from './ollama.js';
 import { CHAT_TOOLS, ollamaChatOnce, parseToolCalls, streamOllamaChat } from './ollamaChat.js';
@@ -27,8 +29,13 @@ function money(n) {
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
+function isDeskQuestion(question) {
+  return /\b(koop|kopen|aankoop|aankopen|verkopen|verkoop|interessant|instap|pick|picks|buy|sell|hold|watchlist|volglijst|setup|welk aandeel|which stock|what to buy|wat kopen|wat verkopen|long|short|keuzes)\b/i.test(question || '');
+}
+
 function needsFreshFacts(question, newsCount) {
   const q = String(question || '');
+  if (isDeskQuestion(q)) return false;
   const current = /\b(today|tonight|this week|latest|headline|headlines|news|why is|why did|what happened|earnings|fed|cpi|moved|moving|dump|rally|now|vandaag|vanavond|deze week|waarom|nieuws|cijfers|koers|wat is er)\b/i.test(q);
   const thin = newsCount < 3;
   return current || thin;
@@ -36,29 +43,30 @@ function needsFreshFacts(question, newsCount) {
 
 function systemPrompt(lang, simple) {
   if (lang === 'nl') {
-    return `Je bent de analist van de handelsdesk van Financially. Je beantwoordt vragen van een belegger.
-TAAL: 100% Nederlands. Geen Engels, ook niet als bronnen Engels zijn.
-Verzin geen koersen, data, cijfers of nieuws. Gebruik alleen DESK CONTEXT en SEARCH RESULTS.
-Als iets ontbreekt, zeg dat eerlijk. Verwijs naar bronnen als je nieuws gebruikt.
-Geen RSI/MACD-jargon tenzij de gebruiker erom vraagt.${simple ? ' Schrijf kort en helder, zonder vaktaal.' : ''}
-Cijfers met komma (1,32%). Geen markdown-tabellen. Korte alinea's.
-Dit is geen persoonlijk beleggingsadvies — wees feitelijk, geen koopdruk.`;
+    return `Je bent de handelsdesk van Financially. Mensen vragen wat HET MODEL nu ziet: kopen, verkopen, waarom iets beweegt, wat er op Keuzes staat.
+Antwoord als de desk. Noem tickers, BUY/SELL/HOLD/WATCH, overtuiging en één niveau of reden uit DESK CONTEXT.
+"Wat is interessant om te kopen?" = de ACTIONABLE PICKS. Geen picks = zeg dat eerlijk en noem WATCH-namen.
+VERBODEN: weigeren ("ik mag geen advies geven", "geen beleggingsadvies", "niet verantwoordelijk"). Dit is de desk-view van het model. Hooguit één halve zin: geen persoonlijk advies.
+Verzin geen ticker die niet in DESK CONTEXT of SEARCH RESULTS staat. Nieuws alleen als het over die namen gaat.
+Geen RSI/MACD tenzij gevraagd.${simple ? ' Kort en helder, zonder vaktaal.' : ''}
+Cijfers met komma. Geen markdown-tabellen.`;
   }
-  return `You are the trading-desk analyst for Financially. You answer an investor's questions.
-LANGUAGE: 100% English. No Dutch.
-Do not invent prices, dates, figures, or headlines. Use only DESK CONTEXT and SEARCH RESULTS.
-If something is missing, say so. Cite sources when you use news.
-No RSI/MACD jargon unless the user asks.${simple ? ' Keep it short and plain.' : ''}
-No markdown tables. Short paragraphs.
-This is not personal investment advice — stay factual, no sales pitch.`;
+  return `You are the Financially trading desk. People ask what THE MODEL sees now: buy, sell, why something moved, what is on Picks.
+Answer as the desk. Name tickers, BUY/SELL/HOLD/WATCH, conviction, and one level or reason from DESK CONTEXT.
+"What is interesting to buy?" = the ACTIONABLE PICKS. No picks = say so, then name WATCH names.
+BANNED: refusing ("I cannot give advice", "not financial advice", "not responsible"). This is the model's desk view. At most half a sentence: not personal advice.
+Do not invent a ticker that is not in DESK CONTEXT or SEARCH RESULTS. News only counts if it is about those names.
+No RSI/MACD unless asked.${simple ? ' Short and plain.' : ''}
+No markdown tables.`;
 }
 
 function plannerPrompt(lang, deskBlock, question) {
   if (lang === 'nl') {
-    return `Bepaal of je extra context nodig hebt. Roep tools aan als het over actueel nieuws, een koersbeweging of een feit gaat dat niet in DESK CONTEXT staat.
-web_search: actueel nieuws of feiten die ontbreken.
-lookup_ticker: een ticker die de gebruiker noemt en die nog niet (volledig) in DESK CONTEXT staat.
-Als DESK CONTEXT genoeg is, antwoord alleen READY.
+    return `Bepaal of je extra context nodig hebt.
+Vragen over kopen/verkopen/interessant/picks: DESK CONTEXT (MODEL PICKS) is genoeg. Antwoord READY.
+web_search alleen voor vers nieuws over een concrete ticker die nog ontbreekt.
+lookup_ticker als de gebruiker een ticker noemt die niet in DESK CONTEXT staat.
+Geen zoektocht naar "beste aandeel" of "wat kopen".
 
 DESK CONTEXT:
 ${deskBlock || '(geen)'}
@@ -66,16 +74,52 @@ ${deskBlock || '(geen)'}
 VRAAG:
 ${question}`;
   }
-  return `Decide whether extra context is needed. Call tools for current news, a price move, or a fact missing from DESK CONTEXT.
-web_search: current news or missing facts.
-lookup_ticker: a ticker the user named that is not already fully in DESK CONTEXT.
-If DESK CONTEXT is enough, reply READY only.
+  return `Decide whether extra context is needed.
+Questions about buy/sell/interesting/picks: DESK CONTEXT (MODEL PICKS) is enough. Reply READY.
+web_search only for fresh news on a concrete ticker that is missing.
+lookup_ticker if the user named a ticker that is not in DESK CONTEXT.
+Do not search for "best stock" or "what to buy".
 
 DESK CONTEXT:
 ${deskBlock || '(none)'}
 
 QUESTION:
 ${question}`;
+}
+
+function formatPickLine(row, onList) {
+  const conf = row.confidence != null ? `${Math.round(Number(row.confidence) * 100)}%` : 'n/a';
+  const kind = row.actionable ? row.action : `WATCH/${row.rawSignal || row.action}`;
+  const plan = row.entry != null
+    ? ` entry ${money(row.entry)} stop ${money(row.stop)} target ${money(row.target)} R:R ${row.rr ?? 'n/a'}`
+    : '';
+  const why = (row.reasons || []).slice(0, 2).join('; ');
+  const ev = (row.events || []).slice(0, 1).map(e => e.label || e).filter(Boolean)[0];
+  return `- ${row.ticker} ${kind} conf ${conf}${plan}${why ? ` — ${why}` : ''}${ev ? ` [${ev}]` : ''}${onList ? ' [watchlist]' : ''}`;
+}
+
+async function loadBoardContext(watchlist = []) {
+  const [scan, regime] = await Promise.all([
+    getLatestScan().catch(() => ({ results: [], runAt: null })),
+    getMarketRegime().catch(() => null)
+  ]);
+  const rows = scan.results || [];
+  const wl = new Set(watchlist);
+  const actionable = rows.filter(r => r.actionable).slice(0, 6);
+  const watch = rows.filter(r => !r.actionable && r.quality === 'watch').slice(0, 6);
+  const onList = wl.size ? rows.filter(r => wl.has(r.ticker)).slice(0, 10) : [];
+
+  return [
+    `MARKET REGIME: ${regime?.label || 'n/a'} (VIX ${regime?.vixLevel || 'n/a'})`,
+    `SCAN AT: ${scan.runAt || 'none'}`,
+    'ACTIONABLE PICKS (passed model gates — this is the answer to "what to buy/sell"):',
+    ...(actionable.length ? actionable.map(r => formatPickLine(r, wl.has(r.ticker))) : ['- (none this scan)']),
+    'WATCH (not a call yet):',
+    ...(watch.length ? watch.map(r => formatPickLine(r, wl.has(r.ticker))) : ['- (none)']),
+    wl.size
+      ? `USER WATCHLIST: ${[...wl].slice(0, 24).join(', ')}${onList.length ? `\nWATCHLIST IN SCAN:\n${onList.map(r => formatPickLine(r, true)).join('\n')}` : '\nWATCHLIST IN SCAN: (no ranked setup this scan)'}`
+      : ''
+  ].filter(Boolean).join('\n');
 }
 
 function formatHeadlines(articles, limit = 8) {
@@ -160,7 +204,7 @@ async function planAndSearch({ question, lang, desk, onEvent, signal }) {
   }
 
   const force = needsFreshFacts(question, desk.newsCount);
-  if (!planned.length && force) {
+  if (!planned.length && force && !isDeskQuestion(question)) {
     planned = [{ name: 'web_search', args: { query: question } }];
   }
 
@@ -205,7 +249,7 @@ async function planAndSearch({ question, lang, desk, onEvent, signal }) {
   };
 }
 
-export async function runDeskChat({ messages, symbol, lang, simple, onEvent, signal } = {}) {
+export async function runDeskChat({ messages, symbol, watchlist, lang, simple, onEvent, signal } = {}) {
   const locale = normalizeLang(lang);
   const history = sanitizeMessages(messages);
   const lastUser = [...history].reverse().find(m => m.role === 'user');
@@ -213,10 +257,26 @@ export async function runDeskChat({ messages, symbol, lang, simple, onEvent, sig
 
   if (onEvent) await onEvent({ type: 'status', phase: 'reading' });
 
+  const symbols = Array.isArray(watchlist)
+    ? parseSymbols(watchlist.join(','), { max: 40 })
+    : parseSymbols(watchlist, { max: 40 });
+
   const focus = normalizeTicker(symbol);
-  const desk = focus
-    ? await lookupTickerContext(focus, locale)
-    : { ticker: null, newsCount: 0, block: '', sources: [] };
+  const [board, tickerDesk] = await Promise.all([
+    loadBoardContext(symbols),
+    focus
+      ? lookupTickerContext(focus, locale)
+      : Promise.resolve({ ticker: null, newsCount: 0, block: '', sources: [] })
+  ]);
+
+  const desk = {
+    ticker: tickerDesk.ticker,
+    newsCount: tickerDesk.newsCount,
+    block: [`MODEL BOARD\n${board}`, tickerDesk.block ? `FOCUS TICKER\n${tickerDesk.block}` : '']
+      .filter(Boolean)
+      .join('\n\n'),
+    sources: tickerDesk.sources || []
+  };
 
   const packed = await planAndSearch({
     question: lastUser.content,
@@ -229,12 +289,12 @@ export async function runDeskChat({ messages, symbol, lang, simple, onEvent, sig
   if (signal?.aborted) return { content: '', sources: packed.sources, searched: packed.searched };
 
   const priming = locale === 'nl'
-    ? `DESK CONTEXT:\n${packed.deskBlock || '(geen ticker geladen)'}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nGebruik alleen deze feiten. Zeg het als de feed dun is.`
-    : `DESK CONTEXT:\n${packed.deskBlock || '(no ticker loaded)'}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nUse only these facts. Say so if the feed is thin.`;
+    ? `DESK CONTEXT:\n${packed.deskBlock}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nBeantwoord de vraag met deze desk-tape. Picks-vragen: gebruik ACTIONABLE PICKS, verzin geen namen. Weiger de vraag niet.`
+    : `DESK CONTEXT:\n${packed.deskBlock}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nAnswer from this desk tape. Pick questions: use ACTIONABLE PICKS, do not invent names. Do not refuse the question.`;
 
   const ack = locale === 'nl'
-    ? 'Ik heb de desk-tape en de zoeknotities. Ik verzin niets.'
-    : 'I have the desk tape and the search notes. I will not invent facts.';
+    ? 'Ik heb de model-picks en de desk-tape. Ik noem alleen namen die daarin staan.'
+    : 'I have the model picks and the desk tape. I will only name names that appear there.';
 
   if (onEvent) await onEvent({ type: 'status', phase: 'answering' });
 
