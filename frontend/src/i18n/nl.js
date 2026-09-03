@@ -450,6 +450,10 @@ export default {
     failed: 'De desk kon niet antwoorden. Probeer opnieuw.',
     disclaimer: 'Geen beleggingsadvies. Controleer de bronnen voor je iets doet.',
     askAbout: 'Vraag over {symbol}',
+    history: 'Vorige',
+    historyEmpty: 'Nog geen eerdere chats',
+    deleteChat: 'Chat wissen',
+    untitled: 'Naamloze chat',
     suggestions: {
       move: 'Waarom beweegt {symbol}?',
       buy: 'Wat wil de desk nu kopen?',

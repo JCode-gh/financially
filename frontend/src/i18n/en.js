@@ -450,6 +450,10 @@ export default {
     failed: 'The desk could not answer. Try again.',
     disclaimer: 'Not financial advice. Check the sources before you act.',
     askAbout: 'Ask about {symbol}',
+    history: 'Previous',
+    historyEmpty: 'No earlier chats',
+    deleteChat: 'Delete chat',
+    untitled: 'Untitled chat',
     suggestions: {
       move: 'Why is {symbol} moving?',
       buy: 'What does the desk want to buy right now?',
