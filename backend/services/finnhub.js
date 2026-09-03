@@ -63,6 +63,21 @@ export async function getStockNews(ticker) {
   });
 }
 
+export async function getCompanyProfile(ticker) {
+  return cached(`profile_${ticker}`, 24 * 3600_000, async () => {
+    const data = await get('/stock/profile2', { symbol: ticker });
+    if (!data?.name && !data?.country && !data?.finnhubIndustry) return null;
+    return {
+      name: data.name || '',
+      country: data.country || '',
+      industry: data.finnhubIndustry || '',
+      exchange: data.exchange || '',
+      marketCap: data.marketCapitalization || null,
+      weburl: data.weburl || ''
+    };
+  });
+}
+
 export async function getBasicFinancials(ticker) {
   return cached(`financials_${ticker}`, 3600_000, async () => {
     const data = await get('/stock/metric', { symbol: ticker, metric: 'all' });

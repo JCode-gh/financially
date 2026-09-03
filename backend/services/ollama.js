@@ -120,7 +120,7 @@ function compactSignals(signals = {}) {
 }
 
 function readableBlob(d) {
-  return [d?.thesis, d?.doNow, ...(d?.why || []), ...(d?.risks || []), ...(d?.catalysts || [])]
+  return [d?.thesis, d?.doNow, d?.notesReply, ...(d?.why || []), ...(d?.risks || []), ...(d?.catalysts || []), ...(d?.overlooked || [])]
     .filter(Boolean)
     .join(' ');
 }
@@ -131,23 +131,78 @@ function decisionMatchesLang(decision, lang) {
   return textMatchesLang(blob, lang);
 }
 
+function styleBlock(style, lang) {
+  const s = String(style || 'desk');
+  if (lang === 'nl') {
+    if (s === 'plain') {
+      return 'STIJL: helder, korte zinnen, geen desk-jargon. Alsof je het aan iemand zonder beurskennis uitlegt.';
+    }
+    if (s === 'skeptic') {
+      return 'STIJL: sceptisch. Zoek eerst waarom de call fout kan zijn. Conviction lager tenzij tape, nieuws én wereldcontext het eens zijn. Zwakste punt eerst in risks.';
+    }
+    if (s === 'detailed') {
+      return 'STIJL: uitgebreid. why mag 3-4 feiten. Zeg wat je weegt én wat je bewust niet weet. Geen vulling.';
+    }
+    return 'STIJL: desk — twee strakke zinnen, één niveau of nieuwsfeit.';
+  }
+  if (s === 'plain') {
+    return 'STYLE: plain English, short sentences, no desk jargon. Explain it to someone who does not trade.';
+  }
+  if (s === 'skeptic') {
+    return 'STYLE: skeptical. Lead with why the call can be wrong. Keep conviction lower unless tape, news and world context agree. Weakest point first in risks.';
+  }
+  if (s === 'detailed') {
+    return 'STYLE: detailed. why may have 3-4 facts. Say what you weighed and what you do not know. No filler.';
+  }
+  return 'STYLE: desk — two tight sentences, one level or news fact.';
+}
+
+function notesBlock(notes, lang) {
+  const text = String(notes || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (lang === 'nl') {
+    return `GEBRUIKER GEEFT MEE (neem dit serieus, verzin geen bevestiging):
+"${text}"
+Als dit het oordeel raakt: zeg hoe in notesReply en pas action/conviction alleen aan als TAPE of WERELD het steunt.
+Als je het niet kunt checken: notesReply = dat je het niet kunt verifiëren, plus wat het zou betekenen ÁLS het klopt. Verzin geen Fed-besluit of oorlog.`;
+  }
+  return `USER NOTE (take it seriously, do not invent confirmation):
+"${text}"
+If it affects the call: say how in notesReply and only change action/conviction if TAPE or WORLD supports it.
+If you cannot check it: notesReply = you cannot verify it, plus what it would mean IF true. Do not invent a Fed decision or a war.`;
+}
+
+function worldBlock(worldText, lang) {
+  const text = String(worldText || '').trim();
+  if (lang === 'nl') {
+    return `WERELD / MACRO (alleen deze regels — niets verzinnen. Leeg = niet beweren dat je het hebt nagekeken):
+${text || '(geen extra wereldhits)'}`;
+  }
+  return `WORLD / MACRO (only these lines — invent nothing. Empty = do not claim you checked it):
+${text || '(no extra world hits)'}`;
+}
+
 function systemPrompt(lang) {
   if (lang === 'nl') {
     return `Je geeft alleen geldige JSON. Geen markdown. Geen verzonnen feiten.
-TAAL: Nederlands. thesis, doNow, why, risks en catalysts zijn 100% Nederlands.
+TAAL: Nederlands. thesis, doNow, why, risks, catalysts, overlooked en notesReply zijn 100% Nederlands.
 Geen Engelse zinnen, ook niet als de input of de headlines Engels zijn.
 action blijft BUY, SELL of HOLD. disagreement blijft none of news_vs_tech.
+notesImpact blijft none, tilted of changed.
 VERBODEN: vage zinnen ("de prijs kan dalen", "er zijn risico's", "het is belangrijk om te onthouden", "niet meer winstgevend").
 VERBODEN: RSI, MACD, ADX, SMA, EMA, 52-weekspositie in de tekst. Cijfers uit de data wél gebruiken (koers, % dag, steun, weerstand).
+VERBODEN: doen alsof je data hebt die niet in TAPE of WERELD staat. Als iets ontbreekt, zeg dat of laat het weg.
 Schrijf verzorgd Nederlands: juiste de/het, geen Engelse leenwoorden (uptrend, productlaunch, support, resistance), geen verhaspelde werkwoorden (gesteegd). Cijfers met komma (1,32%).
 action en doNow moeten hetzelfde zeggen. BUY = koop/instap. SELL = verkoop/verklein. HOLD = niet bijkopen/wacht.`;
   }
   return `You output only valid JSON. No markdown. No invented facts.
-LANGUAGE: English. thesis, doNow, why, risks and catalysts must be 100% English.
+LANGUAGE: English. thesis, doNow, why, risks, catalysts, overlooked and notesReply must be 100% English.
 Do not write Dutch, even if headlines or company names are Dutch.
 action stays BUY, SELL or HOLD. disagreement stays none or news_vs_tech.
+notesImpact stays none, tilted or changed.
 BANNED: vague lines ("the price can fall", "there are risks", "it is important to remember", "no longer profitable").
 BANNED: RSI, MACD, ADX, SMA, EMA in the prose. Do use numbers from the data (price, day %, support, resistance).
+BANNED: claiming data that is not in TAPE or WORLD. If something is missing, say so or omit it.
 action and doNow must agree. BUY = buy/add. SELL = sell/trim. HOLD = do not add / wait.`;
 }
 
@@ -191,6 +246,10 @@ NIEUWSSENTIMENT: ${ctx.newsLabel || 'neutraal'} (${ctx.newsScore ?? 0})
 KOPPEN OVER ${ctx.ticker}:
 ${headlines || '(geen kop die dit aandeel noemt)'}
 
+${worldBlock(ctx.worldText, 'nl')}
+
+${notesBlock(ctx.notes, 'nl')}
+
 ALLEEN VOOR JE OORDEEL, NIET OVERNEMEN IN DE TEKST:
 RSI ${ctx.rsi ?? 'n/a'} · ADX ${ctx.adx ?? 'n/a'} · 52w ${ctx.week52 ?? 'n/a'}
 QUANT 5D ${five.prediction || 'n/a'} score ${five.score ?? 'n/a'} target ${five.targetPrice ?? 'n/a'}
@@ -207,6 +266,10 @@ NEWS SENTIMENT: ${ctx.newsLabel || 'neutral'} (${ctx.newsScore ?? 0})
 HEADLINES ABOUT ${ctx.ticker}:
 ${headlines || '(none that name this ticker)'}
 
+${worldBlock(ctx.worldText, 'en')}
+
+${notesBlock(ctx.notes, 'en')}
+
 JUDGE ONLY, DO NOT PASTE INTO THE PROSE:
 RSI ${ctx.rsi ?? 'n/a'} · ADX ${ctx.adx ?? 'n/a'} · 52w ${ctx.week52 ?? 'n/a'}
 QUANT 5D ${five.prediction || 'n/a'} score ${five.score ?? 'n/a'} target ${five.targetPrice ?? 'n/a'}
@@ -218,8 +281,10 @@ ${(ctx.reasons || []).slice(0, 5).map(r => `- ${r}`).join('\n') || '-'}`;
   if (lang === 'nl') {
     return `Je bent een analist van de handelsdesk. Geef een belegger een duidelijk BUY, SELL of HOLD voor de komende 1-10 sessies.
 Wees eerlijk. Zwakke of gemengde tape = HOLD. Verzin geen feiten, data, koersen of katalysatoren. Gebruik alleen de data hieronder.
-Nieuws telt alleen als het over DIT aandeel gaat. Als nieuws en techniek botsen, zeg dat en verlaag de overtuiging.
+Nieuws over DIT aandeel weegt zwaarder dan algemene macro. WERELD telt als het dit aandeel, deze sector of dit productieland raakt.
+Als nieuws en techniek botsen, zeg dat en verlaag de overtuiging.
 Conviction 70+ alleen als tape en nieuws het eens zijn. 40 of lager als het voordeel dun is.
+${styleBlock(ctx.style, 'nl')}
 
 FOUT (nooit zo schrijven):
 - BUY plus "houd je aandelen" of "kijk uit naar een stijging"
@@ -227,12 +292,15 @@ FOUT (nooit zo schrijven):
 - thesis herhalen in why
 - RSI/MACD uitleggen
 - "het aandeel is gekozen/verkozen" — dat betekent niks
+- doen alsof je de Fed of een oorlog hebt gezien als WERELD dat niet noemt
 
 GOED:
 - thesis: wat er nu speelt + welk niveau de call maakt of breekt, met echte cijfers
 - doNow: één werkwoord dat bij action hoort (Koop / Verkoop / Wacht)
 - why: 2 andere feiten uit de data of één headline-thema, geen herhaling
 - risks: een concreet niveau of een concreet nieuwsfeit
+- overlooked: 1-3 dingen uit WERELD die de gebruiker misschien niet zag (macro, land, sector). Weglaten als WERELD leeg is.
+- notesReply: alleen als er een gebruikersnoot is
 
 TAAL (verplicht): verzorgd krantennederlands. Juiste de/het. Geen Engels (uptrend, productlaunch, support).
 Geen 52-weekspositie, geen RSI. Cijfers met komma. action blijft BUY, SELL of HOLD.
@@ -240,25 +308,30 @@ Geen 52-weekspositie, geen RSI. Cijfers met komma. action blijft BUY, SELL of HO
 ${factsNl}
 
 Geef alleen JSON:
-{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"twee Nederlandse zinnen met een niveau of een nieuwsfeit","doNow":"Koop/Verkoop/Wacht + voorwaarde voor de volgende sessie","why":["feit 1","feit 2"],"risks":["concreet risico"],"catalysts":["volgende echte trigger of weglaten"],"disagreement":"none|news_vs_tech"}`;
+{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"twee Nederlandse zinnen met een niveau of een nieuwsfeit","doNow":"Koop/Verkoop/Wacht + voorwaarde voor de volgende sessie","why":["feit 1","feit 2"],"risks":["concreet risico"],"catalysts":["volgende echte trigger of weglaten"],"overlooked":["feit uit WERELD of weglaten"],"notesReply":"korte reactie of leeg","notesImpact":"none|tilted|changed","disagreement":"none|news_vs_tech"}`;
   }
 
   return `You are a trading-desk analyst. Give a trader a clear BUY, SELL, or HOLD for the next 1-10 sessions.
 Be honest. Weak or mixed tape = HOLD. Do not invent facts, dates, prices, or catalysts. Use only the data below.
-News only counts if it is about THIS ticker. If news and technicals disagree, say so and cut conviction.
+News about THIS ticker outweighs general macro. WORLD counts when it hits this ticker, its sector, or its production country.
+If news and technicals disagree, say so and cut conviction.
 Conviction 70+ only when tape and news agree. 40 or below if the edge is thin.
+${styleBlock(ctx.style, 'en')}
 
 BAD (never write this):
 - BUY plus "hold your shares" or "watch for a rise"
 - risk = "the price can fall" / "no longer profitable"
 - repeating the thesis in why
 - explaining RSI/MACD
+- claiming you saw the Fed or a war when WORLD does not say so
 
 GOOD:
 - thesis: what is happening now + the level that makes or breaks the call, with real numbers
 - doNow: one verb that matches action (Buy / Sell / Wait)
 - why: 2 other facts from the data or one headline theme, no repeats
 - risks: a concrete level or a concrete news item
+- overlooked: 1-3 WORLD facts the user may have missed (macro, country, sector). Omit if WORLD is empty.
+- notesReply: only if there is a user note
 
 LANGUAGE (required): natural English. No Dutch. No indicator jargon.
 action stays BUY, SELL or HOLD.
@@ -266,7 +339,7 @@ action stays BUY, SELL or HOLD.
 ${factsEn}
 
 Return JSON only:
-{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"two English sentences with a level or a news fact","doNow":"Buy/Sell/Wait + a condition for the next session","why":["fact 1","fact 2"],"risks":["concrete risk"],"catalysts":["next real trigger or omit"],"disagreement":"none|news_vs_tech"}`;
+{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"two English sentences with a level or a news fact","doNow":"Buy/Sell/Wait + a condition for the next session","why":["fact 1","fact 2"],"risks":["concrete risk"],"catalysts":["next real trigger or omit"],"overlooked":["WORLD fact or omit"],"notesReply":"short reply or empty","notesImpact":"none|tilted|changed","disagreement":"none|news_vs_tech"}`;
 }
 
 function money(n) {
@@ -468,12 +541,21 @@ function polishDecision(decision, ctx, lang) {
     doNow = fallbackDoNow(decision.action, ctx, lang);
   }
 
+  const overlooked = (decision.overlooked || [])
+    .map(s => fix(s))
+    .filter(s => s && !isVague(s) && !JARGON_RE.test(s) && !(lang === 'nl' && looksBrokenDutch(s)));
+  let notesReply = fix(decision.notesReply);
+  if (!ctx.notes) notesReply = '';
+  else if (!notesReply || isVague(notesReply) || JARGON_RE.test(notesReply)) notesReply = '';
+
   return {
     ...decision,
     thesis: thesis.slice(0, 400),
     doNow: doNow.slice(0, 180),
     why: (why.length ? why : factWhy(ctx, lang)).slice(0, 5),
-    risks: (risks.length ? risks : factRisks(ctx, decision.action, lang)).slice(0, 4)
+    risks: (risks.length ? risks : factRisks(ctx, decision.action, lang)).slice(0, 4),
+    overlooked: overlooked.slice(0, 3),
+    notesReply: notesReply.slice(0, 240)
   };
 }
 
@@ -486,6 +568,9 @@ function qualityRewritePrompt(decision, ctx, lang) {
     why: decision.why,
     risks: decision.risks,
     catalysts: decision.catalysts,
+    overlooked: decision.overlooked,
+    notesReply: decision.notesReply,
+    notesImpact: decision.notesImpact,
     disagreement: decision.disagreement
   });
   const extra = `PRICE ${ctx.price} SUPPORT ${ctx.support ?? 'n/a'} RESISTANCE ${ctx.resistance ?? 'n/a'} DAY ${ctx.dayChange ?? 'n/a'} HEADLINE: ${firstHeadline(ctx) || '(none)'}`;
@@ -526,20 +611,28 @@ function rewritePrompt(decision, lang) {
     why: decision.why,
     risks: decision.risks,
     catalysts: decision.catalysts,
+    overlooked: decision.overlooked,
+    notesReply: decision.notesReply,
+    notesImpact: decision.notesImpact,
     disagreement: decision.disagreement
   });
   if (lang === 'nl') {
-    return `Herschrijf onderstaande JSON. Houd action, conviction en disagreement exact hetzelfde.
-Zet thesis, doNow, why, risks en catalysts om naar natuurlijk Nederlands. Geen Engels meer.
+    return `Herschrijf onderstaande JSON. Houd action, conviction, notesImpact en disagreement exact hetzelfde.
+Zet thesis, doNow, why, risks, catalysts, overlooked en notesReply om naar natuurlijk Nederlands. Geen Engels meer.
 Geef alleen de JSON.
 
 ${json}`;
   }
-  return `Rewrite the JSON below. Keep action, conviction and disagreement exactly the same.
-Put thesis, doNow, why, risks and catalysts into natural English. No Dutch.
+  return `Rewrite the JSON below. Keep action, conviction, notesImpact and disagreement exactly the same.
+Put thesis, doNow, why, risks, catalysts, overlooked and notesReply into natural English. No Dutch.
 Return JSON only.
 
 ${json}`;
+}
+
+function normalizeNotesImpact(raw) {
+  const v = String(raw || 'none').toLowerCase();
+  return v === 'tilted' || v === 'changed' ? v : 'none';
 }
 
 function normalizeDecision(raw, fallbackAction = 'HOLD') {
@@ -553,6 +646,9 @@ function normalizeDecision(raw, fallbackAction = 'HOLD') {
     why: Array.isArray(raw?.why) ? raw.why.map(s => String(s).trim()).filter(Boolean).slice(0, 5) : [],
     risks: Array.isArray(raw?.risks) ? raw.risks.map(s => String(s).trim()).filter(Boolean).slice(0, 4) : [],
     catalysts: Array.isArray(raw?.catalysts) ? raw.catalysts.map(s => String(s).trim()).filter(Boolean).slice(0, 3) : [],
+    overlooked: Array.isArray(raw?.overlooked) ? raw.overlooked.map(s => String(s).trim()).filter(Boolean).slice(0, 3) : [],
+    notesReply: String(raw?.notesReply || '').trim().slice(0, 240),
+    notesImpact: normalizeNotesImpact(raw?.notesImpact),
     disagreement: disagreement === 'news_vs_tech' ? 'news_vs_tech' : 'none',
     model: activeModel
   };
@@ -571,7 +667,7 @@ async function chatJson(messages, opts = {}) {
     model: activeModel,
     stream: false,
     format: 'json',
-    options: { temperature: opts.temperature ?? 0.28, num_predict: opts.numPredict ?? 480 },
+    options: { temperature: opts.temperature ?? 0.28, num_predict: opts.numPredict ?? 560 },
     messages
   }, { timeout: opts.timeout ?? TIMEOUT });
   noteOllamaSuccess(activeModel);
@@ -764,6 +860,7 @@ export async function decideTrade(ctx) {
     rewritten.action = first.action;
     rewritten.conviction = first.conviction;
     rewritten.disagreement = first.disagreement;
+    rewritten.notesImpact = first.notesImpact;
     if (decisionMatchesLang(rewritten, lang)) decision = rewritten;
   }
 
@@ -775,6 +872,7 @@ export async function decideTrade(ctx) {
     tighter.action = decision.action;
     tighter.conviction = decision.conviction;
     tighter.disagreement = decision.disagreement;
+    tighter.notesImpact = decision.notesImpact;
     if (readableBlob(tighter)) decision = tighter;
   }
 

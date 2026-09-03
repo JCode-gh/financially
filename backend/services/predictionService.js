@@ -3,6 +3,8 @@ import { getHistoricalSeries } from './historyProvider.js';
 import { getQuote } from '../providers/marketData.js';
 import { getStockArticles } from '../providers/news.js';
 import { decideTrade, summarizeArticles } from './ollama.js';
+import { loadWorldContext, formatWorldBlock } from './worldContext.js';
+import { buildBriefing, briefCacheTag, clipNotes, normalizeStyle } from './briefing.js';
 import { enrichArticles, fallbackSnippet, isPriceMovingArticle, isUsefulText, pickSourceArticles } from '../lib/articleBody.js';
 import { logger } from '../lib/logger.js';
 import { createTtlCache } from '../lib/cache.js';
@@ -55,7 +57,29 @@ function grounded(items, corpus) {
   });
 }
 
-function reconcileAi(ai, result, articles, lang = 'en') {
+function worldCorpus(world) {
+  return [
+    ...(world?.hits || []).flatMap(h => [h.title, h.content]),
+    world?.profile?.name,
+    world?.profile?.countryName,
+    world?.profile?.industry,
+    world?.regime?.label
+  ].filter(Boolean).join(' ');
+}
+
+function fallbackNotesReply(notes, world, lang) {
+  if (!notes) return '';
+  if (lang === 'nl') {
+    return world?.hits?.length
+      ? 'Je noot is meegewogen tegen de tape en de extra zoekhits. Zie hieronder of dat de call kleurt.'
+      : 'Je noot is meegewogen. Ik kan het niet onafhankelijk bevestigen uit de ticker-koppen.';
+  }
+  return world?.hits?.length
+    ? 'Your note was weighed against the tape and the extra search hits. See below whether it colors the call.'
+    : 'Your note was weighed. I cannot independently confirm it from the ticker headlines.';
+}
+
+function reconcileAi(ai, result, articles, lang = 'en', world = null, notes = '') {
   if (!ai) return ai;
   const five = fiveDayFrom(result);
   const quant = five.prediction || 'NEUTRAL';
@@ -63,7 +87,8 @@ function reconcileAi(ai, result, articles, lang = 'en') {
   const corpus = [
     ...(articles || []).flatMap(a => [a.headline, a.summary]),
     ...(result.newsSentiment?.topEvents || []).map(e => e.label),
-    ...(result.reasons || [])
+    ...(result.reasons || []),
+    worldCorpus(world)
   ].join(' ');
 
   ai.catalysts = grounded(ai.catalysts, corpus);
@@ -97,6 +122,13 @@ function reconcileAi(ai, result, articles, lang = 'en') {
   if ((quant === 'UP' && ai.action === 'SELL') || (quant === 'DOWN' && ai.action === 'BUY')) {
     ai.disagreement = 'news_vs_tech';
     ai.conviction = Math.min(ai.conviction, 60);
+  }
+  ai.overlooked = grounded(ai.overlooked, corpus);
+  if (!notes) {
+    ai.notesReply = '';
+    ai.notesImpact = 'none';
+  } else if (!ai.notesReply) {
+    ai.notesReply = fallbackNotesReply(notes, world, lang);
   }
   return ai;
 }
@@ -134,7 +166,39 @@ async function finishSources(articles, lang, ticker = '') {
   return packSources(items, summaries, digest);
 }
 
-async function attachAiDecision(result, articles, name, quote, lang = 'en') {
+function packPayload(result, { ai, aiError, articles, quote, world, style, notes, packed, lang }) {
+  const decision = ai
+    ? reconcileAi(ai, result, articles, lang, world, notes)
+    : null;
+  const briefing = buildBriefing({
+    result,
+    quote,
+    articles,
+    world,
+    style,
+    notes,
+    notesReply: decision?.notesReply || '',
+    notesImpact: decision?.notesImpact || 'none',
+    lang
+  });
+  if (!decision && notes && !briefing.notesReply) {
+    briefing.notesReply = fallbackNotesReply(notes, world, lang);
+  }
+  if (decision && !briefing.notesReply) briefing.notesReply = decision.notesReply || '';
+  return {
+    ...result,
+    ai: decision,
+    aiError,
+    newsUsed: (articles || []).length,
+    sourcesDigest: packed.digest,
+    sources: packed.sources,
+    briefing,
+    overlooked: decision?.overlooked || []
+  };
+}
+
+async function attachAiDecision(result, articles, name, quote, lang = 'en', extra = {}) {
+  const { world = null, style = 'desk', notes = '' } = extra;
   const picked = pickSourceArticles(articles, result.ticker);
   const enrichPromise = enrichArticles(picked, articles, result.ticker);
   try {
@@ -165,18 +229,15 @@ async function attachAiDecision(result, articles, name, quote, lang = 'en') {
           source: a.source || ''
         })),
         reasons: result.reasons,
+        worldText: formatWorldBlock(world, lang),
+        style,
+        notes,
         lang
       }),
       enrichPromise
     ]);
     const packed = await finishSources(enriched, lang, result.ticker);
-    return {
-      ...result,
-      ai: reconcileAi(ai, result, articles, lang),
-      newsUsed: (articles || []).length,
-      sourcesDigest: packed.digest,
-      sources: packed.sources
-    };
+    return packPayload(result, { ai, articles, quote, world, style, notes, packed, lang });
   } catch (err) {
     logger.warn(`Ollama decision skipped: ${err.message}`);
     const enriched = await enrichPromise.catch(() => picked);
@@ -188,25 +249,37 @@ async function attachAiDecision(result, articles, name, quote, lang = 'en') {
         text: a.summary || a.description || ''
       })).filter(s => s.title && s.url)
     ));
-    return {
-      ...result,
+    return packPayload(result, {
       ai: null,
       aiError: err.message,
-      newsUsed: (articles || []).length,
-      sourcesDigest: packed.digest,
-      sources: packed.sources
-    };
+      articles,
+      quote,
+      world,
+      style,
+      notes,
+      packed,
+      lang
+    });
   }
 }
 
-export async function generateForTicker(ticker, name, { force, lang = 'en' } = {}) {
+export async function generateForTicker(ticker, name, { force, lang = 'en', style, notes } = {}) {
   const locale = lang === 'nl' ? 'nl' : 'en';
-  const key = `desk_${ticker}_${locale}_v18`;
+  const briefStyle = normalizeStyle(style);
+  const briefNotes = clipNotes(notes);
+  const key = `desk_${ticker}_${locale}_v19_${briefCacheTag(briefStyle, briefNotes)}`;
   if (force) genCache.cache.delete(key);
   return genCache.cached(key, GEN_TTL_MS, async () => {
-    const { candles, articles, name: resolvedName, quote } = await loadModelInputs(ticker, name);
+    const [{ candles, articles, name: resolvedName, quote }, world] = await Promise.all([
+      loadModelInputs(ticker, name),
+      loadWorldContext(ticker, name, { notes: briefNotes, lang: locale }).catch(() => null)
+    ]);
     const result = await generatePredictions(ticker, candles, articles);
-    return attachAiDecision(result, articles, resolvedName, quote, locale);
+    return attachAiDecision(result, articles, resolvedName, quote, locale, {
+      world,
+      style: briefStyle,
+      notes: briefNotes
+    });
   });
 }
 
@@ -330,7 +403,7 @@ export function getPredictionHistory({ ticker, horizon, limit = 50, resolved } =
 
 export function peekDeskCall(ticker, lang = 'en') {
   const locale = lang === 'nl' ? 'nl' : 'en';
-  const key = `desk_${String(ticker || '').toUpperCase()}_${locale}_v18`;
+  const key = `desk_${String(ticker || '').toUpperCase()}_${locale}_v19_${briefCacheTag('desk', '')}`;
   return genCache.cache.get(key)?.data || null;
 }
 

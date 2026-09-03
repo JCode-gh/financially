@@ -62,9 +62,15 @@ export const predictionsApi = {
   accuracy: () => http.get('/predictions/accuracy'),
   history: (params) => http.get('/predictions/history', { params }),
   forSymbol: (symbol) => http.get(`/predictions/${symPath(symbol)}`),
-  generate: (symbol, name, { force } = {}) =>
-    http.post(`/predictions/generate/${symPath(symbol)}`, { name, force: !!force, lang: readLocale() }, {
-      timeout: 110000,
+  generate: (symbol, name, { force, style, notes } = {}) =>
+    http.post(`/predictions/generate/${symPath(symbol)}`, {
+      name,
+      force: !!force,
+      lang: readLocale(),
+      style: style || undefined,
+      notes: notes || undefined
+    }, {
+      timeout: 120000,
       params: { lang: readLocale() }
     }),
   tradeSetup: (symbol, maxDays) => http.post(`/predictions/trade-setup/${symPath(symbol)}`, { maxDays }),

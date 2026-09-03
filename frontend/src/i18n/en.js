@@ -122,6 +122,7 @@ export default {
     analyzingTitle: 'Analyzing {symbol}',
     analyzingTape: 'Price and trend',
     analyzingNews: 'News and sentiment',
+    analyzingWorld: 'World and macro',
     analyzingModel: 'Qwen weighing the data',
     analyzingCall: 'Forming the call',
     llamaMeta: 'Qwen 2.5 · {pct}%',
@@ -133,6 +134,31 @@ export default {
     fallbackBuy: '{symbol} has a measurable long edge — technicals lean bullish.',
     fallbackSell: '{symbol} has a measurable short edge — technicals lean bearish.',
     fallbackHold: 'No clear edge in {symbol} — wait for a cleaner setup.'
+  },
+  brief: {
+    steer: 'Steer this',
+    hideSteer: 'Close',
+    apply: 'Recompute',
+    styleLabel: 'Write it as',
+    style: {
+      desk: 'Desk',
+      plain: 'Plain',
+      skeptic: 'Skeptic',
+      detailed: 'Detailed'
+    },
+    notesLabel: 'Also weigh this',
+    notesPlaceholder: 'e.g. the Fed just cut rates — does that change the call?',
+    notesClear: 'Clear note',
+    notesApplied: 'Your note',
+    weighedShort: 'Weighed:',
+    considered: 'What went into this',
+    skipped: 'Not in this call',
+    overlooked: 'You may have missed',
+    headlinesUsed: 'Headlines in this call',
+    worldHits: 'World / macro / country',
+    impactNone: 'Note weighed — does not change the call',
+    impactTilted: 'Note colors the write-up',
+    impactChanged: 'Note steered the call'
   },
   news: {
     title: 'News',

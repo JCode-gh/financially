@@ -36,7 +36,12 @@ router.post('/generate/:symbol', rateLimit({ windowMs: 60_000, max: 20 }), async
   const ticker = requireTicker(req.params.symbol);
   const name = req.body?.name || req.query.name;
   const force = req.body?.force === true || req.query.force === '1';
-  return ok(res, await generateForTicker(ticker, name, { force, lang: requestLang(req) }));
+  return ok(res, await generateForTicker(ticker, name, {
+    force,
+    lang: requestLang(req),
+    style: req.body?.style,
+    notes: req.body?.notes
+  }));
 }));
 
 router.post('/trade-setup/:symbol', rateLimit({ windowMs: 60_000, max: 20 }), asyncHandler(async (req, res) => {

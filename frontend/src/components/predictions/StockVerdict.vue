@@ -12,6 +12,9 @@
         <p v-if="verdict.doNow" class="text-xs font-mono text-accent">{{ $t('verdict.doNow', { text: verdict.doNow }) }}</p>
         <p v-if="verdict.detail" class="text-[11px] font-mono text-gray-500 hidden md:block">{{ verdict.detail }}</p>
       </div>
+      <p v-if="verdict.teaser" class="mt-1 text-[11px] font-mono text-gray-500 truncate" :title="verdict.teaser">
+        {{ $t('brief.weighedShort') }} {{ verdict.teaser }}
+      </p>
       <div v-if="verdict.canExpand" class="mt-1.5">
         <button
           type="button"
@@ -20,10 +23,11 @@
         >
           {{ open ? $t('verdict.hideDetails') : (ui.isSimple ? $t('verdict.whyCall') : $t('verdict.fullBreakdown')) }}
         </button>
-        <div v-if="open" class="mt-2 space-y-1.5">
+        <div v-if="open" class="mt-2 space-y-2.5">
           <ul v-if="verdict.why.length" class="space-y-1">
             <li v-for="(w, i) in verdict.why" :key="i" class="text-sm text-gray-300 leading-relaxed">{{ w }}</li>
           </ul>
+          <VerdictBriefing :briefing="verdict.briefing" :overlooked="verdict.overlooked" />
           <SourceList
             v-if="verdict.digest || verdict.sources.length"
             class="mt-2"
@@ -49,13 +53,19 @@
     </p>
     <button
       type="button"
-      @click="rerun"
+      @click="steerOpen = !steerOpen"
       :disabled="loading"
       class="flex-shrink-0 ml-auto sm:ml-0 text-[11px] sm:text-xs px-2.5 py-1.5 rounded font-mono border transition-colors"
       :class="loading ? 'border-surface-300 text-gray-500' : 'border-accent/40 text-accent hover:bg-accent/10'"
     >
-      {{ loading ? $t('verdict.readingShort') : $t('verdict.rerun') }}
+      <span class="inline-flex items-center gap-1.5">
+        {{ loading ? $t('verdict.readingShort') : (steerOpen ? $t('brief.hideSteer') : $t('brief.steer')) }}
+        <span v-if="predictionStore.briefNotes && !steerOpen" class="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden="true"></span>
+      </span>
     </button>
+    <div v-if="steerOpen" class="order-4 basis-full pt-1 border-t border-surface-300">
+      <VerdictSteer :symbol="symbol" :loading="loading" @applied="onSteered" />
+    </div>
   </div>
 
   <div v-else-if="verdict" class="px-4 sm:px-5 py-3 sm:py-4 border-b border-surface-300 flex-shrink-0">
@@ -76,6 +86,19 @@
         <p v-if="verdict.risks.length" class="mt-2 text-xs font-mono text-neutral">
           {{ $t('verdict.risk', { text: verdict.risks.join(' · ') }) }}
         </p>
+        <div class="mt-3">
+          <button
+            type="button"
+            class="text-[11px] font-mono text-accent hover:text-accent/70"
+            @click="steerOpen = !steerOpen"
+          >
+            {{ steerOpen ? $t('brief.hideSteer') : $t('brief.steer') }}
+          </button>
+          <div v-if="steerOpen" class="mt-2">
+            <VerdictSteer :symbol="symbol" :loading="loading" @applied="onSteered" />
+          </div>
+        </div>
+        <VerdictBriefing class="mt-3" :briefing="verdict.briefing" :overlooked="verdict.overlooked" />
         <div v-if="ui.isPro && horizons.length" class="flex flex-wrap gap-4 mt-4 text-sm font-mono">
           <div v-for="h in horizons" :key="h.horizon" class="flex items-center gap-1.5">
             <span class="text-gray-500">{{ h.label }}:</span>
@@ -115,13 +138,15 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { usePredictionStore } from '../../stores/predictionStore.js';
-import { useMarketStore } from '../../stores/marketStore.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { formatPrice } from '../../utils/format.js';
 import { simpleReasons } from '../../utils/picks.js';
 import SourceList from '../news/SourceList.vue';
+import VerdictSteer from './VerdictSteer.vue';
+import VerdictBriefing from './VerdictBriefing.vue';
 
 const open = ref(false);
+const steerOpen = ref(false);
 const analyzeTick = ref(0);
 let analyzeTimer = null;
 
@@ -132,13 +157,13 @@ const props = defineProps({
 });
 
 const predictionStore = usePredictionStore();
-const marketStore = useMarketStore();
 const ui = useUiStore();
 const { t } = useI18n();
 
 const analyzingSteps = computed(() => [
   t('verdict.analyzingTape'),
   t('verdict.analyzingNews'),
+  t('verdict.analyzingWorld'),
   t('verdict.analyzingModel'),
   t('verdict.analyzingCall')
 ]);
@@ -226,11 +251,19 @@ const verdict = computed(() => {
     risks,
     sources: (pred.sources || []).filter(s => s?.title && s?.url).slice(0, 5),
     digest: String(pred.sourcesDigest || '').trim(),
-    canExpand: !!(headline || why.length || risks.length || pred.sourcesDigest)
+    briefing: pred.briefing || null,
+    overlooked: pred.overlooked || pred.ai?.overlooked || [],
+    teaser: (pred.briefing?.considered || []).slice(0, 4).map(c => c.value).filter(Boolean).join(' · '),
+    canExpand: !!(headline || why.length || risks.length || pred.sourcesDigest || pred.briefing || pred.overlooked?.length)
   };
 });
 
-watch(() => props.symbol, () => { open.value = false; });
+watch(() => props.symbol, () => { open.value = false; steerOpen.value = false; });
+
+function onSteered() {
+  open.value = true;
+  steerOpen.value = false;
+}
 
 const horizons = computed(() => {
   const preds = prediction.value?.predictions;
@@ -245,12 +278,6 @@ const horizons = computed(() => {
   }));
 });
 
-async function rerun() {
-  if (!props.symbol) return;
-  try {
-    await predictionStore.generateForSymbol(props.symbol, marketStore.selectedQuote?.name, { force: true });
-  } catch { /* shown in strip */ }
-}
 </script>
 
 <style scoped>

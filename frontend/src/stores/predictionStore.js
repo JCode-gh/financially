@@ -3,17 +3,44 @@ import { ref, computed } from 'vue';
 import { predictionsApi } from '../services/api.js';
 import { currentLocale, t } from '../i18n/index.js';
 
+const STYLE_KEY = 'financially.briefStyle';
+const STYLES = ['desk', 'plain', 'skeptic', 'detailed'];
+
+function readStyle() {
+  try {
+    const s = localStorage.getItem(STYLE_KEY);
+    return STYLES.includes(s) ? s : 'desk';
+  } catch {
+    return 'desk';
+  }
+}
+
 export const usePredictionStore = defineStore('predictions', () => {
   const accuracy = ref(null);
   const currentPrediction = ref(null);
   const byTicker = ref({});
   const predictionHistory = ref([]);
   const tradeSetup = ref(null);
+  const briefStyle = ref(readStyle());
+  const briefNotes = ref('');
   const loading = ref({ accuracy: false, generating: false, history: false, tradeSetup: false });
   const generating = ref(false);
   const error = ref(null);
   let genReqId = 0;
   let setupReqId = 0;
+
+  function setBriefStyle(style) {
+    briefStyle.value = STYLES.includes(style) ? style : 'desk';
+    try { localStorage.setItem(STYLE_KEY, briefStyle.value); } catch { /* ignore */ }
+  }
+
+  function setBriefNotes(notes) {
+    briefNotes.value = String(notes || '').slice(0, 400);
+  }
+
+  function clearBriefNotes() {
+    briefNotes.value = '';
+  }
 
   const overallAccuracy = computed(() => {
     if (!accuracy.value?.horizons) return null;
@@ -41,21 +68,30 @@ export const usePredictionStore = defineStore('predictions', () => {
     finally { loading.value.accuracy = false; }
   }
 
-  async function generateForSymbol(symbol, name, { force } = {}) {
+  async function generateForSymbol(symbol, name, { force, style, notes } = {}) {
     const key = String(symbol || '').toUpperCase();
     if (!key) return null;
     const reqId = ++genReqId;
     const locale = currentLocale();
+    const nextStyle = style || briefStyle.value;
+    const nextNotes = notes != null ? notes : briefNotes.value;
     const cached = byTicker.value[key];
-    const cacheOk = cached && cached._lang === locale;
+    const sameBrief = cached?._style === nextStyle && cached?._notes === String(nextNotes || '').trim();
+    const cacheOk = cached && cached._lang === locale && sameBrief;
     if (cacheOk) currentPrediction.value = cached;
     generating.value = !cacheOk || !!force;
     loading.value.generating = generating.value;
     error.value = null;
     try {
-      const res = await predictionsApi.generate(symbol, name, { force });
+      const res = await predictionsApi.generate(symbol, name, { force, style: nextStyle, notes: nextNotes });
       if (reqId !== genReqId) return null;
-      const data = { ...res.data.data, _at: Date.now(), _lang: locale };
+      const data = {
+        ...res.data.data,
+        _at: Date.now(),
+        _lang: locale,
+        _style: nextStyle,
+        _notes: String(nextNotes || '').trim()
+      };
       byTicker.value = { ...byTicker.value, [key]: data };
       currentPrediction.value = data;
       return data;
@@ -115,8 +151,10 @@ export const usePredictionStore = defineStore('predictions', () => {
   }
 
   return {
-    accuracy, currentPrediction, byTicker, predictionHistory, tradeSetup, loading, generating, error,
+    accuracy, currentPrediction, byTicker, predictionHistory, tradeSetup,
+    briefStyle, briefNotes, loading, generating, error,
     overallAccuracy, modelHealth,
+    setBriefStyle, setBriefNotes, clearBriefNotes,
     fetchAccuracy, generateForSymbol, fetchForSymbol, fetchHistory, generateTradeSetup
   };
 });

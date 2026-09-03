@@ -122,6 +122,7 @@ export default {
     analyzingTitle: '{symbol} analyseren',
     analyzingTape: 'Koers en trend',
     analyzingNews: 'Nieuws en sentiment',
+    analyzingWorld: 'Wereld en macro',
     analyzingModel: 'Qwen weegt de data',
     analyzingCall: 'Advies formuleren',
     llamaMeta: 'Qwen 2.5 · {pct}%',
@@ -133,6 +134,31 @@ export default {
     fallbackBuy: '{symbol} heeft een meetbaar koopvoordeel — de technische signalen zijn positief.',
     fallbackSell: '{symbol} heeft een meetbaar verkoopvoordeel — de technische signalen zijn negatief.',
     fallbackHold: 'Geen duidelijk voordeel in {symbol} — wacht op een schonere setup.'
+  },
+  brief: {
+    steer: 'Stuur mee',
+    hideSteer: 'Sluiten',
+    apply: 'Herbereken',
+    styleLabel: 'Toon als',
+    style: {
+      desk: 'Desk',
+      plain: 'Helder',
+      skeptic: 'Sceptisch',
+      detailed: 'Uitgebreid'
+    },
+    notesLabel: 'Houd hier rekening mee',
+    notesPlaceholder: 'bv. de Fed heeft net de rente verlaagd — weegt dat mee?',
+    notesClear: 'Noot wissen',
+    notesApplied: 'Jouw noot',
+    weighedShort: 'Meegewogen:',
+    considered: 'Meegewogen',
+    skipped: 'Niet in dit oordeel',
+    overlooked: 'Misschien gemist',
+    headlinesUsed: 'Koppen in deze call',
+    worldHits: 'Wereld / macro / land',
+    impactNone: 'Noot gewogen — verandert de call niet',
+    impactTilted: 'Noot kleurt de toelichting',
+    impactChanged: 'Noot heeft de call bijgestuurd'
   },
   news: {
     title: 'Nieuws',
