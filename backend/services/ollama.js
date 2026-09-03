@@ -6,8 +6,8 @@ const HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/
 const WANTED = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
 const SEARCH_WANTED = (process.env.OLLAMA_SEARCH_MODEL || '').trim();
 const TIMEOUT = Number(process.env.OLLAMA_TIMEOUT_MS || 45000);
-const FALLBACKS = ['llama3.2', 'llama3.1', 'llama3', 'qwen2.5', 'qwen2', 'mistral', 'gemma3', 'gemma2'];
-const SEARCH_FALLBACKS = ['qwen3:4b', 'qwen3', 'qwen2.5:3b', 'llama3.2'];
+const FALLBACKS = ['qwen2.5', 'qwen3', 'qwen2', 'qwen', 'mistral', 'gemma3', 'gemma2', 'llama3.2', 'llama3.1', 'llama3'];
+const SEARCH_FALLBACKS = ['qwen3:4b', 'qwen3', 'qwen2.5:3b', 'qwen2.5', 'qwen2', 'qwen'];
 
 let activeModel = WANTED;
 let searchModel = SEARCH_WANTED || WANTED;
@@ -25,7 +25,13 @@ function matchModel(names, wanted) {
 
 function pickInstalledModel(names) {
   const chat = (names || []).filter(isChatModel);
-  return matchModel(chat, WANTED) || FALLBACKS.map(w => matchModel(chat, w)).find(Boolean) || chat[0] || '';
+  const exact = matchModel(chat, WANTED);
+  if (exact) return exact;
+  if (/^qwen/i.test(WANTED)) {
+    const qwen = chat.find(n => /^qwen/i.test(n));
+    if (qwen) return qwen;
+  }
+  return FALLBACKS.map(w => matchModel(chat, w)).find(Boolean) || chat[0] || '';
 }
 
 function pickSearchModel(names, chatModel) {

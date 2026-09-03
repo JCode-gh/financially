@@ -58,8 +58,13 @@
 @keyframes flashUp { 0% { color: #00ff88; text-shadow: 0 0 12px rgba(0,255,136,0.7); } 100% {} }
 @keyframes flashDown { 0% { color: #ff4444; text-shadow: 0 0 12px rgba(255,68,68,0.7); } 100% {} }
 
-/* Scrollable panels */
-.panel-scroll { overflow-y: auto; scrollbar-width: thin; }
+/* Scrollable panels — min-h-0 on flex parents + touch momentum for iOS */
+.panel-scroll {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
 
 /* Signal bar */
 .signal-bar {

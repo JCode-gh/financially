@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col h-full overflow-y-auto lg:overflow-hidden bg-surface">
+  <div class="flex flex-col h-full min-h-0 overflow-hidden bg-surface">
     <div class="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2 border-b border-surface-300 flex-shrink-0">
       <button
         type="button"
@@ -51,14 +51,16 @@
       </button>
     </div>
 
-    <StockVerdict :symbol="symbol" :loading="generating" />
+    <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain panel-scroll">
+      <StockVerdict :symbol="symbol" :loading="generating" />
 
-    <div class="min-h-[280px] h-[46vh] lg:h-auto lg:flex-1 lg:min-h-0 overflow-hidden w-full">
-      <StockChart :symbol="symbol" hide-quote flush />
-    </div>
+      <div class="min-h-[280px] h-[46vh] sm:h-[50vh] lg:min-h-[320px] lg:h-[min(480px,52vh)] flex-shrink-0 overflow-hidden w-full">
+        <StockChart :symbol="symbol" hide-quote flush />
+      </div>
 
-    <div v-if="digest || sources.length" class="flex-shrink-0 px-4 sm:px-5 py-3 border-t border-surface-300 max-h-[40vh] overflow-y-auto overscroll-contain w-full">
-      <SourceList :items="sources" :digest="digest" :heading="$t('verdict.sources')" />
+      <div v-if="digest || sources.length" class="flex-shrink-0 px-4 sm:px-5 py-3 border-t border-surface-300 w-full">
+        <SourceList :items="sources" :digest="digest" :heading="$t('verdict.sources')" />
+      </div>
     </div>
 
     <TradeSetupModal
