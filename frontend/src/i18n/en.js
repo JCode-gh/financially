@@ -158,7 +158,10 @@ export default {
     worldHits: 'World / macro / country',
     impactNone: 'Note weighed — does not change the call',
     impactTilted: 'Note colors the write-up',
-    impactChanged: 'Note steered the call'
+    impactChanged: 'Note steered the call',
+    claimConfirmed: 'Claim backed by a source',
+    claimUnverified: 'Claim not confirmed — not a fact',
+    claimContradicted: 'Claim contradicted by the sources'
   },
   news: {
     title: 'News',

@@ -161,15 +161,21 @@ function notesBlock(notes, lang) {
   const text = String(notes || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   if (lang === 'nl') {
-    return `GEBRUIKER GEEFT MEE (neem dit serieus, verzin geen bevestiging):
+    return `GEBRUIKERCLAIM (onbetrouwbaar tot WERELD of KOPPEN het bevestigen — de gebruiker kan liegen):
 "${text}"
-Als dit het oordeel raakt: zeg hoe in notesReply en pas action/conviction alleen aan als TAPE of WERELD het steunt.
-Als je het niet kunt checken: notesReply = dat je het niet kunt verifiëren, plus wat het zou betekenen ÁLS het klopt. Verzin geen Fed-besluit of oorlog.`;
+Eerst factchecken. claimCheck = confirmed alleen als WERELD/KOPPEN het hard maken.
+Tegenspraak (bv. gebruiker zegt rate cut, hits zeggen hike) = contradicted.
+Geen steun = unverified.
+notesReply MOET met die check beginnen. Nooit de claim herhalen als feit ("de Fed heeft de rente verlaagd") als claimCheck niet confirmed is.
+action/conviction alleen aanpassen bij confirmed. Anders notesImpact=none.`;
   }
-  return `USER NOTE (take it seriously, do not invent confirmation):
+  return `USER CLAIM (untrusted until WORLD or HEADLINES confirm it — the user can lie):
 "${text}"
-If it affects the call: say how in notesReply and only change action/conviction if TAPE or WORLD supports it.
-If you cannot check it: notesReply = you cannot verify it, plus what it would mean IF true. Do not invent a Fed decision or a war.`;
+Fact-check first. claimCheck = confirmed only if WORLD/HEADLINES nail it.
+Contradiction (user says rate cut, hits say hike) = contradicted.
+No support = unverified.
+notesReply MUST open with that check. Never repeat the claim as fact ("the Fed cut rates") unless claimCheck is confirmed.
+Only change action/conviction when confirmed. Otherwise notesImpact=none.`;
 }
 
 function worldBlock(worldText, lang) {
@@ -188,7 +194,7 @@ function systemPrompt(lang) {
 TAAL: Nederlands. thesis, doNow, why, risks, catalysts, overlooked en notesReply zijn 100% Nederlands.
 Geen Engelse zinnen, ook niet als de input of de headlines Engels zijn.
 action blijft BUY, SELL of HOLD. disagreement blijft none of news_vs_tech.
-notesImpact blijft none, tilted of changed.
+notesImpact blijft none, tilted of changed. claimCheck blijft none, confirmed, contradicted of unverified.
 VERBODEN: vage zinnen ("de prijs kan dalen", "er zijn risico's", "het is belangrijk om te onthouden", "niet meer winstgevend").
 VERBODEN: RSI, MACD, ADX, SMA, EMA, 52-weekspositie in de tekst. Cijfers uit de data wél gebruiken (koers, % dag, steun, weerstand).
 VERBODEN: doen alsof je data hebt die niet in TAPE of WERELD staat. Als iets ontbreekt, zeg dat of laat het weg.
@@ -199,7 +205,7 @@ action en doNow moeten hetzelfde zeggen. BUY = koop/instap. SELL = verkoop/verkl
 LANGUAGE: English. thesis, doNow, why, risks, catalysts, overlooked and notesReply must be 100% English.
 Do not write Dutch, even if headlines or company names are Dutch.
 action stays BUY, SELL or HOLD. disagreement stays none or news_vs_tech.
-notesImpact stays none, tilted or changed.
+notesImpact stays none, tilted or changed. claimCheck stays none, confirmed, contradicted or unverified.
 BANNED: vague lines ("the price can fall", "there are risks", "it is important to remember", "no longer profitable").
 BANNED: RSI, MACD, ADX, SMA, EMA in the prose. Do use numbers from the data (price, day %, support, resistance).
 BANNED: claiming data that is not in TAPE or WORLD. If something is missing, say so or omit it.
@@ -300,7 +306,7 @@ GOED:
 - why: 2 andere feiten uit de data of één headline-thema, geen herhaling
 - risks: een concreet niveau of een concreet nieuwsfeit
 - overlooked: 1-3 dingen uit WERELD die de gebruiker misschien niet zag (macro, land, sector). Weglaten als WERELD leeg is.
-- notesReply: alleen als er een gebruikersnoot is
+- notesReply: alleen als er een gebruikersnoot is; begin met de factcheck
 
 TAAL (verplicht): verzorgd krantennederlands. Juiste de/het. Geen Engels (uptrend, productlaunch, support).
 Geen 52-weekspositie, geen RSI. Cijfers met komma. action blijft BUY, SELL of HOLD.
@@ -308,7 +314,7 @@ Geen 52-weekspositie, geen RSI. Cijfers met komma. action blijft BUY, SELL of HO
 ${factsNl}
 
 Geef alleen JSON:
-{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"twee Nederlandse zinnen met een niveau of een nieuwsfeit","doNow":"Koop/Verkoop/Wacht + voorwaarde voor de volgende sessie","why":["feit 1","feit 2"],"risks":["concreet risico"],"catalysts":["volgende echte trigger of weglaten"],"overlooked":["feit uit WERELD of weglaten"],"notesReply":"korte reactie of leeg","notesImpact":"none|tilted|changed","disagreement":"none|news_vs_tech"}`;
+{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"twee Nederlandse zinnen met een niveau of een nieuwsfeit","doNow":"Koop/Verkoop/Wacht + voorwaarde voor de volgende sessie","why":["feit 1","feit 2"],"risks":["concreet risico"],"catalysts":["volgende echte trigger of weglaten"],"overlooked":["feit uit WERELD of weglaten"],"notesReply":"factcheck + korte reactie of leeg","notesImpact":"none|tilted|changed","claimCheck":"none|confirmed|contradicted|unverified","disagreement":"none|news_vs_tech"}`;
   }
 
   return `You are a trading-desk analyst. Give a trader a clear BUY, SELL, or HOLD for the next 1-10 sessions.
@@ -331,7 +337,7 @@ GOOD:
 - why: 2 other facts from the data or one headline theme, no repeats
 - risks: a concrete level or a concrete news item
 - overlooked: 1-3 WORLD facts the user may have missed (macro, country, sector). Omit if WORLD is empty.
-- notesReply: only if there is a user note
+- notesReply: only if there is a user note; open with the fact-check
 
 LANGUAGE (required): natural English. No Dutch. No indicator jargon.
 action stays BUY, SELL or HOLD.
@@ -339,7 +345,7 @@ action stays BUY, SELL or HOLD.
 ${factsEn}
 
 Return JSON only:
-{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"two English sentences with a level or a news fact","doNow":"Buy/Sell/Wait + a condition for the next session","why":["fact 1","fact 2"],"risks":["concrete risk"],"catalysts":["next real trigger or omit"],"overlooked":["WORLD fact or omit"],"notesReply":"short reply or empty","notesImpact":"none|tilted|changed","disagreement":"none|news_vs_tech"}`;
+{"action":"BUY|SELL|HOLD","conviction":0-100,"thesis":"two English sentences with a level or a news fact","doNow":"Buy/Sell/Wait + a condition for the next session","why":["fact 1","fact 2"],"risks":["concrete risk"],"catalysts":["next real trigger or omit"],"overlooked":["WORLD fact or omit"],"notesReply":"fact-check + short reply or empty","notesImpact":"none|tilted|changed","claimCheck":"none|confirmed|contradicted|unverified","disagreement":"none|news_vs_tech"}`;
 }
 
 function money(n) {
@@ -571,6 +577,7 @@ function qualityRewritePrompt(decision, ctx, lang) {
     overlooked: decision.overlooked,
     notesReply: decision.notesReply,
     notesImpact: decision.notesImpact,
+    claimCheck: decision.claimCheck,
     disagreement: decision.disagreement
   });
   const extra = `PRICE ${ctx.price} SUPPORT ${ctx.support ?? 'n/a'} RESISTANCE ${ctx.resistance ?? 'n/a'} DAY ${ctx.dayChange ?? 'n/a'} HEADLINE: ${firstHeadline(ctx) || '(none)'}`;
@@ -614,16 +621,17 @@ function rewritePrompt(decision, lang) {
     overlooked: decision.overlooked,
     notesReply: decision.notesReply,
     notesImpact: decision.notesImpact,
+    claimCheck: decision.claimCheck,
     disagreement: decision.disagreement
   });
   if (lang === 'nl') {
-    return `Herschrijf onderstaande JSON. Houd action, conviction, notesImpact en disagreement exact hetzelfde.
+    return `Herschrijf onderstaande JSON. Houd action, conviction, notesImpact, claimCheck en disagreement exact hetzelfde.
 Zet thesis, doNow, why, risks, catalysts, overlooked en notesReply om naar natuurlijk Nederlands. Geen Engels meer.
 Geef alleen de JSON.
 
 ${json}`;
   }
-  return `Rewrite the JSON below. Keep action, conviction, notesImpact and disagreement exactly the same.
+  return `Rewrite the JSON below. Keep action, conviction, notesImpact, claimCheck and disagreement exactly the same.
 Put thesis, doNow, why, risks, catalysts, overlooked and notesReply into natural English. No Dutch.
 Return JSON only.
 
@@ -633,6 +641,11 @@ ${json}`;
 function normalizeNotesImpact(raw) {
   const v = String(raw || 'none').toLowerCase();
   return v === 'tilted' || v === 'changed' ? v : 'none';
+}
+
+function normalizeClaimCheck(raw) {
+  const v = String(raw || 'none').toLowerCase();
+  return v === 'confirmed' || v === 'contradicted' || v === 'unverified' ? v : 'none';
 }
 
 function normalizeDecision(raw, fallbackAction = 'HOLD') {
@@ -649,6 +662,7 @@ function normalizeDecision(raw, fallbackAction = 'HOLD') {
     overlooked: Array.isArray(raw?.overlooked) ? raw.overlooked.map(s => String(s).trim()).filter(Boolean).slice(0, 3) : [],
     notesReply: String(raw?.notesReply || '').trim().slice(0, 240),
     notesImpact: normalizeNotesImpact(raw?.notesImpact),
+    claimCheck: normalizeClaimCheck(raw?.claimCheck),
     disagreement: disagreement === 'news_vs_tech' ? 'news_vs_tech' : 'none',
     model: activeModel
   };
@@ -861,6 +875,7 @@ export async function decideTrade(ctx) {
     rewritten.conviction = first.conviction;
     rewritten.disagreement = first.disagreement;
     rewritten.notesImpact = first.notesImpact;
+    rewritten.claimCheck = first.claimCheck;
     if (decisionMatchesLang(rewritten, lang)) decision = rewritten;
   }
 
@@ -873,6 +888,7 @@ export async function decideTrade(ctx) {
     tighter.conviction = decision.conviction;
     tighter.disagreement = decision.disagreement;
     tighter.notesImpact = decision.notesImpact;
+    tighter.claimCheck = decision.claimCheck;
     if (readableBlob(tighter)) decision = tighter;
   }
 

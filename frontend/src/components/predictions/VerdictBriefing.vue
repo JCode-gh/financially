@@ -3,6 +3,7 @@
     <div v-if="notesReply">
       <p class="text-[11px] font-mono text-accent uppercase tracking-wide mb-1">{{ $t('brief.notesApplied') }}</p>
       <p class="text-sm text-gray-200 leading-relaxed">{{ notesReply }}</p>
+      <p v-if="claimCheckLabel" class="mt-1 text-[11px] font-mono" :class="claimCheckClass">{{ claimCheckLabel }}</p>
       <p v-if="notesImpactLabel" class="mt-1 text-[11px] font-mono text-gray-500">{{ notesImpactLabel }}</p>
     </div>
 
@@ -83,10 +84,25 @@ const overlooked = computed(() => {
   return [];
 });
 
+const claimCheck = computed(() => props.briefing?.claimCheck || '');
+const claimCheckLabel = computed(() => {
+  if (claimCheck.value === 'contradicted') return t('brief.claimContradicted');
+  if (claimCheck.value === 'unverified') return t('brief.claimUnverified');
+  if (claimCheck.value === 'confirmed') return t('brief.claimConfirmed');
+  return '';
+});
+const claimCheckClass = computed(() => {
+  if (claimCheck.value === 'contradicted') return 'text-bear';
+  if (claimCheck.value === 'unverified') return 'text-neutral';
+  if (claimCheck.value === 'confirmed') return 'text-bull';
+  return 'text-gray-500';
+});
+
 const notesImpactLabel = computed(() => {
   const impact = props.briefing?.notesReply
     ? (props.briefing.notesImpact || '')
     : '';
+  if (claimCheck.value === 'contradicted' || claimCheck.value === 'unverified') return '';
   if (impact === 'changed') return t('brief.impactChanged');
   if (impact === 'tilted') return t('brief.impactTilted');
   if (notesReply.value) return t('brief.impactNone');

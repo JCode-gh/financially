@@ -158,7 +158,10 @@ export default {
     worldHits: 'Wereld / macro / land',
     impactNone: 'Noot gewogen — verandert de call niet',
     impactTilted: 'Noot kleurt de toelichting',
-    impactChanged: 'Noot heeft de call bijgestuurd'
+    impactChanged: 'Noot heeft de call bijgestuurd',
+    claimConfirmed: 'Claim bevestigd door een bron',
+    claimUnverified: 'Claim niet bevestigd — geen feit',
+    claimContradicted: 'Claim tegengesproken door de bronnen'
   },
   news: {
     title: 'Nieuws',

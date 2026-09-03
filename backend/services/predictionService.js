@@ -5,6 +5,7 @@ import { getStockArticles } from '../providers/news.js';
 import { decideTrade, summarizeArticles } from './ollama.js';
 import { loadWorldContext, formatWorldBlock } from './worldContext.js';
 import { buildBriefing, briefCacheTag, clipNotes, normalizeStyle } from './briefing.js';
+import { checkUserClaims, worstClaimStatus, honestClaimReply, replyTreatsClaimAsFact } from '../lib/factCheck.js';
 import { enrichArticles, fallbackSnippet, isPriceMovingArticle, isUsefulText, pickSourceArticles } from '../lib/articleBody.js';
 import { logger } from '../lib/logger.js';
 import { createTtlCache } from '../lib/cache.js';
@@ -69,14 +70,11 @@ function worldCorpus(world) {
 
 function fallbackNotesReply(notes, world, lang) {
   if (!notes) return '';
-  if (lang === 'nl') {
-    return world?.hits?.length
-      ? 'Je noot is meegewogen tegen de tape en de extra zoekhits. Zie hieronder of dat de call kleurt.'
-      : 'Je noot is meegewogen. Ik kan het niet onafhankelijk bevestigen uit de ticker-koppen.';
-  }
-  return world?.hits?.length
-    ? 'Your note was weighed against the tape and the extra search hits. See below whether it colors the call.'
-    : 'Your note was weighed. I cannot independently confirm it from the ticker headlines.';
+  const status = worstClaimStatus(checkUserClaims(notes, world?.hits || [])) || 'unverified';
+  return honestClaimReply(status === 'confirmed' ? 'unverified' : status, lang)
+    || (lang === 'nl'
+      ? 'Ik kan je claim niet bevestigen in de bronnen. Ik behandel hem als onbewezen.'
+      : 'I cannot confirm your claim in the sources. I treat it as unverified.');
 }
 
 function reconcileAi(ai, result, articles, lang = 'en', world = null, notes = '') {
@@ -127,8 +125,18 @@ function reconcileAi(ai, result, articles, lang = 'en', world = null, notes = ''
   if (!notes) {
     ai.notesReply = '';
     ai.notesImpact = 'none';
-  } else if (!ai.notesReply) {
-    ai.notesReply = fallbackNotesReply(notes, world, lang);
+    ai.claimCheck = 'none';
+  } else {
+    const machine = worstClaimStatus(checkUserClaims(notes, world?.hits || []));
+    if (machine === 'contradicted' || machine === 'unverified') {
+      ai.claimCheck = machine;
+      ai.notesImpact = 'none';
+      if (!ai.notesReply || replyTreatsClaimAsFact(ai.notesReply, notes)) {
+        ai.notesReply = fallbackNotesReply(notes, world, lang);
+      }
+    } else if (!ai.notesReply) {
+      ai.notesReply = fallbackNotesReply(notes, world, lang);
+    }
   }
   return ai;
 }
@@ -179,12 +187,17 @@ function packPayload(result, { ai, aiError, articles, quote, world, style, notes
     notes,
     notesReply: decision?.notesReply || '',
     notesImpact: decision?.notesImpact || 'none',
+    claimCheck: decision?.claimCheck || 'none',
     lang
   });
   if (!decision && notes && !briefing.notesReply) {
     briefing.notesReply = fallbackNotesReply(notes, world, lang);
   }
   if (decision && !briefing.notesReply) briefing.notesReply = decision.notesReply || '';
+  if (notes && (!briefing.claimCheck || briefing.claimCheck === 'none')) {
+    const machine = worstClaimStatus(checkUserClaims(notes, world?.hits || []));
+    if (machine) briefing.claimCheck = machine;
+  }
   return {
     ...result,
     ai: decision,

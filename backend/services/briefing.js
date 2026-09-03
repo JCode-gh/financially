@@ -52,6 +52,7 @@ export function buildBriefing({
   notes,
   notesReply,
   notesImpact,
+  claimCheck,
   lang = 'en'
 }) {
   const locale = lang === 'nl' ? 'nl' : 'en';
@@ -126,6 +127,9 @@ export function buildBriefing({
     notes: clipNotes(notes),
     notesReply: String(notesReply || '').trim().slice(0, 240),
     notesImpact: notesImpact === 'tilted' || notesImpact === 'changed' ? notesImpact : 'none',
+    claimCheck: claimCheck === 'confirmed' || claimCheck === 'contradicted' || claimCheck === 'unverified'
+      ? claimCheck
+      : 'none',
     considered,
     skipped,
     headlines: headlines.slice(0, 6),

@@ -8,6 +8,14 @@ import { peekDeskCall } from './predictionService.js';
 import { currentOllamaModel, currentSearchModel } from './ollama.js';
 import { CHAT_TOOLS, ollamaChatOnce, parseToolCalls, streamOllamaChat } from './ollamaChat.js';
 import { formatSearchBlock, webSearch } from './webSearch.js';
+import {
+  looksLikeFactualClaim,
+  verificationQueries,
+  checkUserClaims,
+  formatFactCheckBlock,
+  worstClaimStatus,
+  honestClaimReply
+} from '../lib/factCheck.js';
 
 const MAX_MESSAGES = 16;
 const MAX_CHARS = 4000;
@@ -35,6 +43,7 @@ function isDeskQuestion(question) {
 
 function needsFreshFacts(question, newsCount) {
   const q = String(question || '');
+  if (looksLikeFactualClaim(q)) return true;
   if (isDeskQuestion(q)) return false;
   const current = /\b(today|tonight|this week|latest|headline|headlines|news|why is|why did|what happened|earnings|fed|cpi|moved|moving|dump|rally|now|vandaag|vanavond|deze week|waarom|nieuws|cijfers|koers|wat is er)\b/i.test(q);
   const thin = newsCount < 3;
@@ -46,6 +55,9 @@ function systemPrompt(lang, simple) {
     return `Je bent de handelsdesk van Financially. Mensen vragen wat HET MODEL nu ziet: kopen, verkopen, waarom iets beweegt, wat er op Keuzes staat.
 Antwoord als de desk. Noem tickers, BUY/SELL/HOLD/WATCH, overtuiging en één niveau of reden uit DESK CONTEXT.
 "Wat is interessant om te kopen?" = de ACTIONABLE PICKS. Geen picks = zeg dat eerlijk en noem WATCH-namen.
+FACTCHECK: de gebruiker kan liegen of ernaast zitten. Een gebruikerszin is een claim, geen feit.
+Herhaal nooit een nieuwsfeit uit de vraag ("de Fed heeft de rente verlaagd") tenzij SEARCH RESULTS dat hard maken.
+Als FACTCHECK of de hits de claim tegenspreken of niet bevestigen: zeg dat in de eerste zin. Daarna pas of het de call kleurt.
 VERBODEN: weigeren ("ik mag geen advies geven", "geen beleggingsadvies", "niet verantwoordelijk"). Dit is de desk-view van het model. Hooguit één halve zin: geen persoonlijk advies.
 Verzin geen ticker die niet in DESK CONTEXT of SEARCH RESULTS staat. Nieuws alleen als het over die namen gaat.
 Geen RSI/MACD tenzij gevraagd.${simple ? ' Kort en helder, zonder vaktaal.' : ''}
@@ -54,6 +66,9 @@ Cijfers met komma. Geen markdown-tabellen.`;
   return `You are the Financially trading desk. People ask what THE MODEL sees now: buy, sell, why something moved, what is on Picks.
 Answer as the desk. Name tickers, BUY/SELL/HOLD/WATCH, conviction, and one level or reason from DESK CONTEXT.
 "What is interesting to buy?" = the ACTIONABLE PICKS. No picks = say so, then name WATCH names.
+FACT CHECK: the user can lie or be wrong. A user sentence is a claim, not a fact.
+Never repeat a news event from the question ("the Fed cut rates") unless SEARCH RESULTS confirm it.
+If FACT CHECK or the hits contradict or fail to confirm the claim: say that in the first sentence. Then whether it colors the call.
 BANNED: refusing ("I cannot give advice", "not financial advice", "not responsible"). This is the model's desk view. At most half a sentence: not personal advice.
 Do not invent a ticker that is not in DESK CONTEXT or SEARCH RESULTS. News only counts if it is about those names.
 No RSI/MACD unless asked.${simple ? ' Short and plain.' : ''}
@@ -63,8 +78,9 @@ No markdown tables.`;
 function plannerPrompt(lang, deskBlock, question) {
   if (lang === 'nl') {
     return `Bepaal of je extra context nodig hebt.
-Vragen over kopen/verkopen/interessant/picks: DESK CONTEXT (MODEL PICKS) is genoeg. Antwoord READY.
-web_search alleen voor vers nieuws over een concrete ticker die nog ontbreekt.
+Vragen over kopen/verkopen/interessant/picks zonder nieuwsclaim: DESK CONTEXT (MODEL PICKS) is genoeg. Antwoord READY.
+Als de gebruiker een nieuwsfeit beweert (Fed, rente, oorlog, cijfers, "net aangekondigd"): ALTIJD web_search om te checken. De gebruiker kan liegen. READY is dan fout.
+web_search ook voor vers nieuws over een concrete ticker die nog ontbreekt.
 lookup_ticker als de gebruiker een ticker noemt die niet in DESK CONTEXT staat.
 Geen zoektocht naar "beste aandeel" of "wat kopen".
 
@@ -75,8 +91,9 @@ VRAAG:
 ${question}`;
   }
   return `Decide whether extra context is needed.
-Questions about buy/sell/interesting/picks: DESK CONTEXT (MODEL PICKS) is enough. Reply READY.
-web_search only for fresh news on a concrete ticker that is missing.
+Buy/sell/picks questions with no news claim: DESK CONTEXT (MODEL PICKS) is enough. Reply READY.
+If the user asserts a news fact (Fed, rates, war, prints, "just announced"): ALWAYS web_search to check. The user can lie. READY is then wrong.
+web_search also for fresh news on a concrete ticker that is missing.
 lookup_ticker if the user named a ticker that is not in DESK CONTEXT.
 Do not search for "best stock" or "what to buy".
 
@@ -204,7 +221,13 @@ async function planAndSearch({ question, lang, desk, onEvent, signal }) {
   }
 
   const force = needsFreshFacts(question, desk.newsCount);
-  if (!planned.length && force && !isDeskQuestion(question)) {
+  const verify = verificationQueries(question);
+  if (verify.length) {
+    const have = new Set(planned.filter(c => c.name === 'web_search').map(c => String(c.args?.query || '').toLowerCase()));
+    for (const q of verify) {
+      if (!have.has(q.toLowerCase())) planned.push({ name: 'web_search', args: { query: q } });
+    }
+  } else if (!planned.length && force && !isDeskQuestion(question)) {
     planned = [{ name: 'web_search', args: { query: question } }];
   }
 
@@ -245,7 +268,8 @@ async function planAndSearch({ question, lang, desk, onEvent, signal }) {
     deskBlock: desk.block,
     searchBlock: formatSearchBlock(hits),
     sources: unique.slice(0, 10),
-    searched
+    searched,
+    hits
   };
 }
 
@@ -288,13 +312,23 @@ export async function runDeskChat({ messages, symbol, watchlist, lang, simple, o
 
   if (signal?.aborted) return { content: '', sources: packed.sources, searched: packed.searched };
 
+  const checks = checkUserClaims(lastUser.content, packed.hits?.length ? packed.hits : packed.sources);
+  const factBlock = formatFactCheckBlock(checks, locale);
+  const today = new Date().toISOString().slice(0, 10);
+  const worst = worstClaimStatus(checks);
+  const opener = (worst === 'contradicted' || worst === 'unverified')
+    ? (locale === 'nl'
+      ? `\n\nVERPLICHTE EERSTE ZIN (niet herschrijven tot een feit):\n${honestClaimReply(worst, 'nl')}`
+      : `\n\nREQUIRED FIRST SENTENCE (do not rewrite it into a fact):\n${honestClaimReply(worst, 'en')}`)
+    : '';
+
   const priming = locale === 'nl'
-    ? `DESK CONTEXT:\n${packed.deskBlock}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nBeantwoord de vraag met deze desk-tape. Picks-vragen: gebruik ACTIONABLE PICKS, verzin geen namen. Weiger de vraag niet.`
-    : `DESK CONTEXT:\n${packed.deskBlock}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nAnswer from this desk tape. Pick questions: use ACTIONABLE PICKS, do not invent names. Do not refuse the question.`;
+    ? `VANDAAG: ${today}\n\n${factBlock}${opener}\n\nDESK CONTEXT:\n${packed.deskBlock}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nBeantwoord de vraag met deze desk-tape. Eerst factcheck, dan de call. Picks-vragen: gebruik ACTIONABLE PICKS, verzin geen namen. Weiger de vraag niet.`
+    : `TODAY: ${today}\n\n${factBlock}${opener}\n\nDESK CONTEXT:\n${packed.deskBlock}\n\nSEARCH RESULTS:\n${packed.searchBlock}\n\nAnswer from this desk tape. Fact-check first, then the call. Pick questions: use ACTIONABLE PICKS, do not invent names. Do not refuse the question.`;
 
   const ack = locale === 'nl'
-    ? 'Ik heb de model-picks en de desk-tape. Ik noem alleen namen die daarin staan.'
-    : 'I have the model picks and the desk tape. I will only name names that appear there.';
+    ? 'Ik heb de model-picks, de desk-tape en de factcheck. Gebruikersclaims zijn geen feiten tot de hits ze steunen.'
+    : 'I have the model picks, the desk tape, and the fact-check. User claims are not facts until the hits support them.';
 
   if (onEvent) await onEvent({ type: 'status', phase: 'answering' });
 
