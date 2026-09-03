@@ -78,6 +78,72 @@ export const predictionsApi = {
   backtest: () => http.post('/predictions/backtest')
 };
 
+export async function streamGeneratePrediction({ symbol, name, force, style, notes, lang, onEvent, signal } = {}) {
+  const res = await fetch(`${API_BASE_URL}/predictions/generate/${symPath(symbol)}/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      'Accept-Language': lang || readLocale()
+    },
+    body: JSON.stringify({
+      name,
+      force: !!force,
+      lang: lang || readLocale(),
+      style: style || undefined,
+      notes: notes || undefined
+    }),
+    signal
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.error || 'Prediction failed');
+    err.normalized = { message: body.error || 'Prediction failed', status: res.status, code: body.code || null };
+    throw err;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('Prediction stream unavailable');
+
+  const decoder = new TextDecoder();
+  let buf = '';
+  let sawError = null;
+  let result = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split('\n\n');
+    buf = parts.pop() || '';
+    for (const part of parts) {
+      const parsed = parseSseBlock(part);
+      if (!parsed) continue;
+      if (parsed.event === 'error') {
+        sawError = parsed.data;
+        continue;
+      }
+      if (parsed.event === 'done') {
+        result = parsed.data?.data || parsed.data;
+      }
+      if (onEvent) {
+        if (parsed.event === 'token') onEvent({ type: 'token', text: parsed.data.text || '' });
+        else if (parsed.event === 'status') onEvent({ type: 'status', phase: parsed.data.phase });
+        else if (parsed.event === 'done') onEvent({ type: 'done', data: result });
+      }
+    }
+  }
+
+  if (sawError) {
+    const err = new Error(sawError.message || 'Prediction failed');
+    err.normalized = { message: sawError.message || 'Prediction failed', status: 0, code: sawError.code || null };
+    throw err;
+  }
+
+  return result;
+}
+
 export const scannerApi = {
   latest: () => http.get('/scanner/latest'),
   run: (symbols) => http.post('/scanner/run', symbols ? { symbols } : {}),

@@ -681,8 +681,44 @@ function parseJsonContent(text) {
   }
 }
 
+async function streamChatJson(messages, opts = {}) {
+  const res = await axios.post(`${HOST}/api/chat`, {
+    model: activeModel,
+    stream: true,
+    format: 'json',
+    options: { temperature: opts.temperature ?? 0.28, num_predict: opts.numPredict ?? 560 },
+    messages
+  }, {
+    responseType: 'stream',
+    timeout: opts.timeout ?? TIMEOUT,
+    signal: opts.signal
+  });
+
+  let buffer = '';
+  let full = '';
+  for await (const chunk of res.data) {
+    if (opts.signal?.aborted) break;
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let json;
+      try { json = JSON.parse(line); } catch { continue; }
+      const piece = json.message?.content || '';
+      if (piece) {
+        full += piece;
+        if (opts.onToken) await opts.onToken(piece);
+      }
+    }
+  }
+  noteOllamaSuccess(activeModel);
+  return parseJsonContent(full);
+}
+
 async function chatJson(messages, opts = {}) {
   await ensureModel();
+  if (opts.onToken) return streamChatJson(messages, opts);
   const res = await axios.post(`${HOST}/api/chat`, {
     model: activeModel,
     stream: false,
@@ -863,7 +899,8 @@ export async function decideTrade(ctx) {
     { role: 'system', content: system },
     { role: 'user', content: buildPrompt(ctx, lang) }
   ];
-  let firstRaw = await chatJson(messages);
+  const streamOpts = ctx.onToken ? { onToken: ctx.onToken } : {};
+  let firstRaw = await chatJson(messages, streamOpts);
   if (process.env.OLLAMA_DEBUG) console.error('ollama first', lang, firstRaw);
   let first = normalizeDecision(firstRaw, fallback);
   if (!readableBlob(first)) {

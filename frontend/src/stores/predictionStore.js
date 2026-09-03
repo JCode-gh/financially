@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { predictionsApi } from '../services/api.js';
+import { predictionsApi, streamGeneratePrediction } from '../services/api.js';
+import { previewFromQwenStream } from '../utils/qwenPreview.js';
 import { currentLocale, t } from '../i18n/index.js';
 
 const STYLE_KEY = 'financially.briefStyle';
@@ -25,9 +26,20 @@ export const usePredictionStore = defineStore('predictions', () => {
   const briefNotes = ref('');
   const loading = ref({ accuracy: false, generating: false, history: false, tradeSetup: false });
   const generating = ref(false);
+  const generatingPhase = ref('');
+  const generatingPreview = ref('');
+  const generatingRaw = ref('');
   const error = ref(null);
   let genReqId = 0;
+  let genAbort = null;
   let setupReqId = 0;
+
+  const PHASE_KEYS = {
+    tape: 'verdict.analyzingTape',
+    news: 'verdict.analyzingNews',
+    world: 'verdict.analyzingWorld',
+    model: 'verdict.analyzingModel'
+  };
 
   function setBriefStyle(style) {
     briefStyle.value = STYLES.includes(style) ? style : 'desk';
@@ -81,22 +93,45 @@ export const usePredictionStore = defineStore('predictions', () => {
     if (cacheOk) currentPrediction.value = cached;
     generating.value = !cacheOk || !!force;
     loading.value.generating = generating.value;
+    generatingPhase.value = '';
+    generatingPreview.value = '';
+    generatingRaw.value = '';
     error.value = null;
+    genAbort?.abort();
+    genAbort = new AbortController();
     try {
-      const res = await predictionsApi.generate(symbol, name, { force, style: nextStyle, notes: nextNotes });
+      const data = await streamGeneratePrediction({
+        symbol,
+        name,
+        force,
+        style: nextStyle,
+        notes: nextNotes,
+        lang: locale,
+        signal: genAbort.signal,
+        onEvent(evt) {
+          if (reqId !== genReqId) return;
+          if (evt.type === 'status') {
+            generatingPhase.value = PHASE_KEYS[evt.phase] || '';
+          }
+          if (evt.type === 'token') {
+            generatingRaw.value += evt.text || '';
+            generatingPreview.value = previewFromQwenStream(generatingRaw.value);
+          }
+        }
+      });
       if (reqId !== genReqId) return null;
-      const data = {
-        ...res.data.data,
+      const packed = {
+        ...data,
         _at: Date.now(),
         _lang: locale,
         _style: nextStyle,
         _notes: String(nextNotes || '').trim()
       };
-      byTicker.value = { ...byTicker.value, [key]: data };
-      currentPrediction.value = data;
-      return data;
+      byTicker.value = { ...byTicker.value, [key]: packed };
+      currentPrediction.value = packed;
+      return packed;
     } catch (e) {
-      if (reqId === genReqId) {
+      if (reqId === genReqId && e?.name !== 'AbortError') {
         error.value = e.normalized?.message || t('errors.predictionFailed');
         throw e;
       }
@@ -104,6 +139,10 @@ export const usePredictionStore = defineStore('predictions', () => {
       if (reqId === genReqId) {
         generating.value = false;
         loading.value.generating = false;
+        generatingPhase.value = '';
+        generatingPreview.value = '';
+        generatingRaw.value = '';
+        genAbort = null;
       }
     }
   }
@@ -152,7 +191,7 @@ export const usePredictionStore = defineStore('predictions', () => {
 
   return {
     accuracy, currentPrediction, byTicker, predictionHistory, tradeSetup,
-    briefStyle, briefNotes, loading, generating, error,
+    briefStyle, briefNotes, loading, generating, generatingPhase, generatingPreview, error,
     overallAccuracy, modelHealth,
     setBriefStyle, setBriefNotes, clearBriefNotes,
     fetchAccuracy, generateForSymbol, fetchForSymbol, fetchHistory, generateTradeSetup

@@ -23,7 +23,7 @@
         >
           {{ open ? $t('verdict.hideDetails') : (ui.isSimple ? $t('verdict.whyCall') : $t('verdict.fullBreakdown')) }}
         </button>
-        <div v-if="open" class="mt-2 space-y-2.5">
+        <div v-if="open" class="mt-2 space-y-2.5 max-h-[min(42vh,24rem)] overflow-y-auto panel-scroll pr-1">
           <ul v-if="verdict.why.length" class="space-y-1">
             <li v-for="(w, i) in verdict.why" :key="i" class="text-sm text-gray-300 leading-relaxed">{{ w }}</li>
           </ul>
@@ -110,7 +110,7 @@
     </div>
   </div>
 
-  <div v-else-if="loading" class="analyzing-card px-4 py-4 overflow-hidden border-b border-surface-300">
+  <div v-else-if="loading" class="analyzing-card px-4 py-4 border-b border-surface-300">
     <div class="flex items-center gap-3.5">
       <div class="analyzing-orb" aria-hidden="true">
         <span class="analyzing-ring"></span>
@@ -121,10 +121,17 @@
         <p class="text-sm sm:text-base text-white font-medium tracking-tight">
           {{ $t('verdict.analyzingTitle', { symbol }) }}
         </p>
-        <p :key="analyzeTick" class="mt-0.5 text-xs font-mono text-accent analyzing-step">{{ analyzingStep }}</p>
+        <p :key="analyzeTick" class="mt-0.5 text-xs font-mono text-accent analyzing-step">
+          {{ activeAnalyzingStep }}
+        </p>
       </div>
     </div>
-    <div class="mt-3.5 space-y-1.5" aria-hidden="true">
+    <div v-if="generatingPreview" class="mt-3 analyzing-preview-wrap">
+      <p class="analyzing-preview text-xs sm:text-sm font-mono text-gray-300 leading-relaxed">
+        {{ generatingPreview }}<span class="analyzing-cursor" aria-hidden="true"></span>
+      </p>
+    </div>
+    <div v-else class="mt-3.5 space-y-1.5" aria-hidden="true">
       <div class="analyzing-bar w-[92%]"></div>
       <div class="analyzing-bar analyzing-bar--slow w-[68%]"></div>
     </div>
@@ -168,6 +175,13 @@ const analyzingSteps = computed(() => [
   t('verdict.analyzingCall')
 ]);
 const analyzingStep = computed(() => analyzingSteps.value[analyzeTick.value % analyzingSteps.value.length]);
+const generatingPreview = computed(() => predictionStore.generatingPreview);
+const activeAnalyzingStep = computed(() => {
+  const phase = predictionStore.generatingPhase;
+  if (phase) return t(phase);
+  if (generatingPreview.value) return t('verdict.analyzingModel');
+  return analyzingStep.value;
+});
 
 function stopAnalyzeCycle() {
   clearInterval(analyzeTimer);
@@ -297,12 +311,14 @@ const horizons = computed(() => {
 
 .analyzing-card {
   position: relative;
+  overflow: visible;
 }
 .analyzing-card::after {
   content: '';
   position: absolute;
   inset: 0 0 auto 0;
   height: 2px;
+  pointer-events: none;
   background: linear-gradient(90deg, transparent, #00d4ff, transparent);
   animation: analyzingScan 2.2s ease-in-out infinite;
 }
@@ -342,6 +358,40 @@ const horizons = computed(() => {
 }
 .analyzing-bar--slow {
   animation-duration: 2.1s;
+}
+.analyzing-preview-wrap {
+  position: relative;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 0.75rem;
+}
+.analyzing-preview-wrap::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.75rem;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(to bottom, rgba(0, 212, 255, 0.85), rgba(0, 212, 255, 0.15));
+}
+.analyzing-preview {
+  max-height: 3.25rem;
+  overflow: hidden;
+  padding-left: 0.75rem;
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+.analyzing-cursor {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.85em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: rgba(0, 212, 255, 0.85);
+  animation: analyzingBlink 0.9s step-end infinite;
+}
+@keyframes analyzingBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 @keyframes analyzingScan {
   0% { transform: translateX(-100%); opacity: 0; }

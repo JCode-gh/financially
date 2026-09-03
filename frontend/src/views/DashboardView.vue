@@ -1,10 +1,10 @@
 <template>
-  <div class="flex flex-col h-full bg-surface overflow-y-auto lg:overflow-hidden">
+  <div class="h-full min-h-0 overflow-y-auto panel-scroll bg-surface">
     <div class="flex-shrink-0 px-2.5 pt-2.5">
       <StockVerdict :symbol="selectedSymbol" :loading="predictionStore.generating" variant="strip" />
     </div>
 
-    <div class="flex-1 dash-grid min-h-0" :class="ui.isSimple ? 'is-simple' : 'is-pro'">
+    <div class="dash-grid dash-grid-body" :class="ui.isSimple ? 'is-simple' : 'is-pro'">
       <div class="news-area min-h-0 overflow-hidden">
         <NewsFeed />
       </div>
@@ -90,6 +90,9 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+.dash-grid-body {
+  min-height: min(640px, calc(100dvh - 11rem));
+}
 .dash-grid {
   display: grid;
   grid-template-columns: minmax(220px, 260px) minmax(0, 1fr) minmax(230px, 300px);

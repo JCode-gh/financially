@@ -51,7 +51,7 @@
       </button>
     </div>
 
-    <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain panel-scroll">
+    <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain panel-scroll pb-4">
       <StockVerdict :symbol="symbol" :loading="generating" />
 
       <div class="min-h-[280px] h-[46vh] sm:h-[50vh] lg:min-h-[320px] lg:h-[min(480px,52vh)] flex-shrink-0 overflow-hidden w-full">

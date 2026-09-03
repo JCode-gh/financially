@@ -211,7 +211,7 @@ function packPayload(result, { ai, aiError, articles, quote, world, style, notes
 }
 
 async function attachAiDecision(result, articles, name, quote, lang = 'en', extra = {}) {
-  const { world = null, style = 'desk', notes = '' } = extra;
+  const { world = null, style = 'desk', notes = '', onToken = null } = extra;
   const picked = pickSourceArticles(articles, result.ticker);
   const enrichPromise = enrichArticles(picked, articles, result.ticker);
   try {
@@ -245,7 +245,8 @@ async function attachAiDecision(result, articles, name, quote, lang = 'en', extr
         worldText: formatWorldBlock(world, lang),
         style,
         notes,
-        lang
+        lang,
+        onToken
       }),
       enrichPromise
     ]);
@@ -276,24 +277,55 @@ async function attachAiDecision(result, articles, name, quote, lang = 'en', extr
   }
 }
 
-export async function generateForTicker(ticker, name, { force, lang = 'en', style, notes } = {}) {
+async function buildDeskPayload(ticker, name, { lang = 'en', style, notes, onEvent } = {}) {
+  const locale = lang === 'nl' ? 'nl' : 'en';
+  const briefStyle = normalizeStyle(style);
+  const briefNotes = clipNotes(notes);
+  const emit = async (type, payload = {}) => {
+    if (onEvent) await onEvent({ type, ...payload });
+  };
+
+  await emit('status', { phase: 'tape' });
+  const inputsPromise = loadModelInputs(ticker, name);
+  await emit('status', { phase: 'news' });
+  const worldPromise = loadWorldContext(ticker, name, { notes: briefNotes, lang: locale }).catch(() => null);
+  await emit('status', { phase: 'world' });
+  const [{ candles, articles, name: resolvedName, quote }, world] = await Promise.all([
+    inputsPromise,
+    worldPromise
+  ]);
+  const result = await generatePredictions(ticker, candles, articles);
+  await emit('status', { phase: 'model' });
+  return attachAiDecision(result, articles, resolvedName, quote, locale, {
+    world,
+    style: briefStyle,
+    notes: briefNotes,
+    onToken: onEvent ? (text) => emit('token', { text }) : null
+  });
+}
+
+export async function generateForTicker(ticker, name, { force, lang = 'en', style, notes, onEvent } = {}) {
   const locale = lang === 'nl' ? 'nl' : 'en';
   const briefStyle = normalizeStyle(style);
   const briefNotes = clipNotes(notes);
   const key = `desk_${ticker}_${locale}_v19_${briefCacheTag(briefStyle, briefNotes)}`;
   if (force) genCache.cache.delete(key);
-  return genCache.cached(key, GEN_TTL_MS, async () => {
-    const [{ candles, articles, name: resolvedName, quote }, world] = await Promise.all([
-      loadModelInputs(ticker, name),
-      loadWorldContext(ticker, name, { notes: briefNotes, lang: locale }).catch(() => null)
-    ]);
-    const result = await generatePredictions(ticker, candles, articles);
-    return attachAiDecision(result, articles, resolvedName, quote, locale, {
-      world,
-      style: briefStyle,
-      notes: briefNotes
-    });
-  });
+
+  if (onEvent) {
+    const cached = !force ? genCache.cache.get(key)?.data : null;
+    if (cached) {
+      await onEvent({ type: 'done', data: cached });
+      return cached;
+    }
+    const data = await buildDeskPayload(ticker, name, { lang: locale, style: briefStyle, notes: briefNotes, onEvent });
+    genCache.cache.set(key, { data, ts: Date.now() });
+    await onEvent({ type: 'done', data });
+    return data;
+  }
+
+  return genCache.cached(key, GEN_TTL_MS, () =>
+    buildDeskPayload(ticker, name, { lang: locale, style: briefStyle, notes: briefNotes })
+  );
 }
 
 export async function tradeSetupForTicker(ticker, maxDays, name) {

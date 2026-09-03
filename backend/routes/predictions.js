@@ -15,6 +15,10 @@ import { requestLang } from '../lib/locale.js';
 
 const router = Router();
 
+function writeEvent(res, event, data) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
 router.get('/accuracy', (req, res) => ok(res, getAccuracySnapshot()));
 
 router.post('/backtest', rateLimit({ windowMs: 60 * 60_000, max: 2 }), asyncHandler(async (req, res) => {
@@ -31,6 +35,50 @@ router.get('/history', (req, res) => {
     resolved: req.query.resolved
   }));
 });
+
+router.post('/generate/:symbol/stream', rateLimit({ windowMs: 60_000, max: 20 }), asyncHandler(async (req, res) => {
+  const ticker = requireTicker(req.params.symbol);
+  const name = req.body?.name || req.query.name;
+  const force = req.body?.force === true || req.query.force === '1';
+
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const ac = new AbortController();
+  const onClose = () => {
+    if (!res.writableFinished) ac.abort();
+  };
+  res.on('close', onClose);
+
+  try {
+    await generateForTicker(ticker, name, {
+      force,
+      lang: requestLang(req),
+      style: req.body?.style,
+      notes: req.body?.notes,
+      onEvent: async (evt) => {
+        if (ac.signal.aborted || res.writableEnded) return;
+        if (evt.type === 'status') writeEvent(res, 'status', { phase: evt.phase });
+        else if (evt.type === 'token') writeEvent(res, 'token', { text: evt.text });
+        else if (evt.type === 'done') writeEvent(res, 'done', { data: evt.data });
+      }
+    });
+  } catch (err) {
+    if (!res.writableEnded) {
+      writeEvent(res, 'error', {
+        message: err.message || 'Prediction failed',
+        code: /offline/i.test(err.message || '') ? 'OLLAMA_OFF' : 'PREDICT_FAILED'
+      });
+    }
+  } finally {
+    res.off('close', onClose);
+    if (!res.writableEnded) res.end();
+  }
+}));
 
 router.post('/generate/:symbol', rateLimit({ windowMs: 60_000, max: 20 }), asyncHandler(async (req, res) => {
   const ticker = requireTicker(req.params.symbol);
