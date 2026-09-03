@@ -295,6 +295,8 @@ export default {
   },
   chart: {
     by: 'tot {date}',
+    forecast: 'Voorspelling',
+    now: 'Nu',
     retrying: 'Opnieuw ({n})…',
     enlarge: 'Grafiek vergroten',
     shrink: 'Grafiek sluiten'

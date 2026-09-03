@@ -15,7 +15,7 @@
           :href="hrefOf(s.url)"
           target="_blank"
           rel="noopener noreferrer"
-          class="group block rounded-md -mx-1 px-1 py-0.5 hover:bg-white/[0.03] cursor-pointer"
+          class="group block -mx-1 px-1 py-0.5 hover:bg-white/[0.03] cursor-pointer"
           @click.stop
         >
           <span class="source-link text-accent group-hover:underline underline-offset-2">{{ s.title }}</span>

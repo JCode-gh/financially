@@ -7,8 +7,12 @@
     />
   </Teleport>
   <div
-    class="card flex flex-col overflow-hidden"
-    :class="expanded ? 'fixed inset-3 sm:inset-4 z-[70] shadow-2xl' : 'h-full'"
+    class="flex flex-col overflow-hidden"
+    :class="expanded
+      ? 'fixed inset-0 z-[70] bg-surface-100 shadow-2xl'
+      : flush
+        ? 'h-full w-full bg-surface-100'
+        : 'card h-full'"
   >
     <!-- Header -->
     <div
@@ -59,13 +63,19 @@
     <!-- Chart -->
     <div class="flex-1 relative min-h-0">
       <div ref="chartContainer" class="absolute inset-0"></div>
+      <svg
+        ref="forecastLayer"
+        class="absolute inset-0 z-[5] pointer-events-none overflow-visible"
+        aria-hidden="true"
+      ></svg>
 
       <div
         v-if="predictionLegend.length"
-        class="absolute top-2 left-2 z-10 font-mono text-[11px] pointer-events-none flex flex-col gap-0.5 bg-surface-100/85 px-2 py-1.5 rounded border border-surface-300/50"
+        class="absolute top-2 left-2 z-10 font-mono text-[11px] pointer-events-none flex flex-col gap-0.5 bg-surface-100/85 px-2 py-1.5 border border-surface-300/50"
       >
+        <div class="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">{{ $t('chart.forecast') }}</div>
         <div v-for="item in predictionLegend" :key="item.horizon" class="flex items-center gap-1.5">
-          <span class="w-3 h-0.5 rounded" :style="{ backgroundColor: item.color }"></span>
+          <span class="forecast-swatch" :style="{ color: item.color }"></span>
           <span class="text-gray-500">{{ item.label }}</span>
           <span :class="item.textColor">{{ item.price }}</span>
         </div>
@@ -92,8 +102,9 @@
     </div>
 
     <div v-if="predictionLegend.length" class="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 border-t border-surface-300/50 flex-shrink-0 text-xs font-mono">
+      <div class="text-gray-600 uppercase tracking-wide self-center">{{ $t('chart.forecast') }}</div>
       <div v-for="item in predictionLegend" :key="item.horizon" class="flex items-center gap-1.5">
-        <span class="w-3 h-0.5 rounded" :style="{ backgroundColor: item.color }"></span>
+        <span class="forecast-swatch" :style="{ color: item.color }"></span>
         <span class="text-gray-500">{{ item.label }}</span>
         <span :class="item.textColor">{{ item.price }}</span>
         <span v-if="item.date" class="text-gray-600">{{ $t('chart.by', { date: item.date }) }}</span>
@@ -108,10 +119,12 @@ import { createChart, CrosshairMode, ColorType } from 'lightweight-charts';
 import { useMarketStore } from '../../stores/marketStore.js';
 import { usePredictionStore } from '../../stores/predictionStore.js';
 import { formatPrice, formatPct } from '../../utils/format.js';
+import { t } from '../../i18n/index.js';
 
 const props = defineProps({
   symbol: String,
-  hideQuote: { type: Boolean, default: false }
+  hideQuote: { type: Boolean, default: false },
+  flush: { type: Boolean, default: false }
 });
 
 const marketStore = useMarketStore();
@@ -134,15 +147,18 @@ const priceFlash = ref('');
 let prevPrice = null;
 
 const chartContainer = ref(null);
+const forecastLayer = ref(null);
 const predictionLegend = ref([]);
 const autoRetrying = ref(false);
 const retryAttempt = ref(0);
-let chart, candleSeries, volumeSeries, forecastSeries, ro;
+let chart, candleSeries, volumeSeries, ro;
 let lastBar = null; // most recent candle, mutated live by streamed trades
-let priceLines = [];
 let retryTimer = null;
 let loadGeneration = 0;
+let forecastBars = [];
 
+const HORIZON_DAYS = { '1d': 1, '5d': 5, '30d': 30 };
+const FORECAST_DAYS = 30;
 const HORIZON_STYLE = {
   '1d':  { color: '#58a6ff', label: '1d' },
   '5d':  { color: '#00d488', label: '5d' },
@@ -207,7 +223,7 @@ function buildChart() {
       horzLine: { color: '#00d4ff55', width: 1, style: 2, labelBackgroundColor: '#1f6feb' }
     },
     rightPriceScale: { borderColor: '#21262d', scaleMargins: { top: 0.08, bottom: 0.25 } },
-    timeScale: { borderColor: '#21262d', timeVisible: false, secondsVisible: false, rightOffset: 4 }
+    timeScale: { borderColor: '#21262d', timeVisible: false, secondsVisible: false, rightOffset: 6 }
   });
 
   candleSeries = chart.addCandlestickSeries({
@@ -219,20 +235,17 @@ function buildChart() {
   volumeSeries = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '' });
   volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
 
-  forecastSeries = chart.addLineSeries({
-    color: '#00d4ff88', lineWidth: 2, lineStyle: 2,
-    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: true
-  });
+  chart.timeScale().subscribeVisibleLogicalRangeChange(paintForecastOverlay);
 }
 
 function clearPredictionOverlay() {
-  for (const pl of priceLines) {
-    try { candleSeries?.removePriceLine(pl); } catch { /* ignore */ }
-  }
-  priceLines = [];
-  forecastSeries?.setData([]);
+  forecastBars = [];
   predictionLegend.value = [];
   try { candleSeries?.setMarkers([]); } catch { /* ignore */ }
+  try {
+    candleSeries?.applyOptions({ autoscaleInfoProvider: (original) => original() });
+  } catch { /* ignore */ }
+  paintForecastOverlay();
 }
 
 function resizeChart() {
@@ -249,43 +262,198 @@ async function setExpanded(on) {
   document.body.classList.toggle('overflow-hidden', expanded.value);
   await nextTick();
   resizeChart();
-  chart?.timeScale().fitContent();
+  applyRightPad();
+  paintForecastOverlay();
 }
 
 function onExpandKey(e) {
   if (e.key === 'Escape' && expanded.value) setExpanded(false);
 }
 
-function dateToUnix(dateStr) {
-  return Math.floor(Date.parse(dateStr + 'T00:00:00Z') / 1000);
+function isBusinessDay(time) {
+  return time && typeof time === 'object' && time.year != null;
 }
 
-function nextSessionUnix(lastTime) {
-  const d = new Date(lastTime * 1000);
+function timeToDate(time) {
+  if (isBusinessDay(time)) return new Date(Date.UTC(time.year, time.month - 1, time.day));
+  return new Date(time * 1000);
+}
+
+function dateToTime(date, asBusinessDay) {
+  if (asBusinessDay) {
+    return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+  }
+  return Math.floor(date.getTime() / 1000);
+}
+
+function nextSession(time) {
+  const asBusinessDay = isBusinessDay(time);
+  const d = timeToDate(time);
   do {
     d.setUTCDate(d.getUTCDate() + 1);
   } while (d.getUTCDay() === 0 || d.getUTCDay() === 6);
-  return Math.floor(d.getTime() / 1000);
+  return dateToTime(d, asBusinessDay);
 }
 
-function tradingDaysAhead(lastTime, days) {
-  let t = lastTime;
-  for (let i = 0; i < days; i++) t = nextSessionUnix(t);
+function tradingDaysAhead(time, days) {
+  let t = time;
+  for (let i = 0; i < days; i++) t = nextSession(t);
   return t;
 }
 
-function easeInPath(startTime, endTime, startPrice, endPrice) {
-  const span = endTime - startTime;
-  const points = [];
-  const seen = new Set();
-  for (let i = 0; i <= 10; i++) {
-    const t = i / 10;
-    const time = startTime + Math.round(span * t);
-    if (seen.has(time)) continue;
-    seen.add(time);
-    points.push({ time, value: startPrice + (endPrice - startPrice) * t * t });
+function sortedTargets(targets) {
+  const order = { '1d': 1, '5d': 2, '30d': 3 };
+  return [...targets].sort((a, b) => (order[a.horizon] || 99) - (order[b.horizon] || 99));
+}
+
+function forecastAnchors(lastClose, targets) {
+  const anchors = [{ day: 0, price: lastClose }];
+  const seen = new Set([0]);
+  for (const p of sortedTargets(targets)) {
+    const day = HORIZON_DAYS[p.horizon];
+    if (day == null || seen.has(day) || p.targetPrice == null) continue;
+    seen.add(day);
+    anchors.push({ day, price: p.targetPrice });
   }
-  return points;
+  return anchors;
+}
+
+function horizonAtDay(day) {
+  if (day === 1) return '1d';
+  if (day === 5) return '5d';
+  if (day === 30) return '30d';
+  return null;
+}
+
+function seedRng(symbol, lastClose, targets) {
+  const key = `${symbol || ''}|${Number(lastClose).toFixed(4)}|${targets.map(p => `${p.horizon}:${p.targetPrice}`).join(',')}`;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  let a = h >>> 0;
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function gauss(rng) {
+  const u = Math.max(rng(), 1e-9);
+  const v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+
+function historyTape(history, fallbackPrice) {
+  const rows = history?.length ? history.slice(-40) : [];
+  const last = rows[rows.length - 1];
+  const px = last?.close || fallbackPrice || 1;
+  if (rows.length < 3) {
+    const r = px * 0.012;
+    return { dailyStd: r, upWick: r * 0.22, dnWick: r * 0.22, gapFreq: 0.2, gapAbs: 0.0015 };
+  }
+  const rets = [];
+  const upWicks = [];
+  const dnWicks = [];
+  const gaps = [];
+  for (let i = 0; i < rows.length; i++) {
+    const c = rows[i];
+    const bodyHigh = Math.max(c.open, c.close);
+    const bodyLow = Math.min(c.open, c.close);
+    upWicks.push(Math.max(0, c.high - bodyHigh));
+    dnWicks.push(Math.max(0, bodyLow - c.low));
+    if (i > 0 && rows[i - 1].close) {
+      rets.push(c.close - rows[i - 1].close);
+      gaps.push((c.open - rows[i - 1].close) / rows[i - 1].close);
+    }
+  }
+  const mean = rets.reduce((s, v) => s + v, 0) / rets.length;
+  const variance = rets.reduce((s, v) => s + (v - mean) ** 2, 0) / rets.length;
+  const absGaps = gaps.map(g => Math.abs(g));
+  return {
+    dailyStd: Math.max(Math.sqrt(variance), px * 0.004),
+    upWick: Math.max(median(upWicks), px * 0.001),
+    dnWick: Math.max(median(dnWicks), px * 0.001),
+    gapFreq: Math.min(0.5, gaps.filter(g => Math.abs(g) > 0.0008).length / gaps.length),
+    gapAbs: Math.max(median(absGaps), 0.0008)
+  };
+}
+
+function bridgeCloses(start, end, steps, sigma, rng) {
+  if (steps <= 0) return [];
+  if (steps === 1) return [end];
+  const walk = [0];
+  for (let i = 1; i <= steps; i++) walk[i] = walk[i - 1] + sigma * gauss(rng);
+  const out = [];
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    out.push(start + (end - start) * t + (walk[i] - walk[steps] * t));
+  }
+  out[steps - 1] = end;
+  return out;
+}
+
+function forecastCloses(lastClose, anchors, tape, rng) {
+  const closes = [lastClose];
+  let price = lastClose;
+  let day = 0;
+  for (let i = 1; i < anchors.length; i++) {
+    const span = anchors[i].day - day;
+    if (span <= 0) continue;
+    const next = bridgeCloses(price, anchors[i].price, span, tape.dailyStd, rng);
+    for (const p of next) closes.push(p);
+    price = anchors[i].price;
+    day = anchors[i].day;
+  }
+  if (day < FORECAST_DAYS) {
+    const tail = bridgeCloses(price, price, FORECAST_DAYS - day, tape.dailyStd * 0.85, rng);
+    for (const p of tail) closes.push(p);
+  }
+  return closes.slice(0, FORECAST_DAYS + 1);
+}
+
+function sessionCandle(prevClose, close, tape, rng) {
+  const gap = rng() < tape.gapFreq ? (rng() * 2 - 1) * tape.gapAbs : 0;
+  const open = prevClose * (1 + gap);
+  const bodyHigh = Math.max(open, close);
+  const bodyLow = Math.min(open, close);
+  const up = tape.upWick * (0.3 + rng() * 1.5);
+  const dn = tape.dnWick * (0.3 + rng() * 1.5);
+  return {
+    open,
+    close,
+    high: bodyHigh + up,
+    low: Math.max(close * 0.2, bodyLow - dn)
+  };
+}
+
+function buildForecastCandles(lastCandle, targets, history) {
+  if (!lastCandle || !targets?.length) return [];
+  const anchors = forecastAnchors(lastCandle.close, targets);
+  if (anchors.length < 2) return [];
+  const tape = historyTape(history, lastCandle.close);
+  const rng = seedRng(props.symbol, lastCandle.close, targets);
+  const closes = forecastCloses(lastCandle.close, anchors, tape, rng);
+  const bars = [];
+  for (let day = 1; day < closes.length && day <= FORECAST_DAYS; day++) {
+    const candle = sessionCandle(closes[day - 1], closes[day], tape, rng);
+    bars.push({
+      time: tradingDaysAhead(lastCandle.time, day),
+      ...candle,
+      horizon: horizonAtDay(day),
+      day
+    });
+  }
+  return bars;
 }
 
 function formatShortDate(dateStr) {
@@ -301,26 +469,120 @@ function predictionTargets() {
   return pred.predictions.filter(p => p.targetPrice);
 }
 
-function applyScaleForTargets(targets, currentPrice) {
+function applyScaleForForecast(forecastBars) {
   if (!candleSeries) return;
-  const prices = targets.map(p => p.targetPrice).filter(n => n != null);
+  const extras = (forecastBars || []).flatMap(c => [c.high, c.low]).filter(n => n != null);
+  if (!extras.length) {
+    candleSeries.applyOptions({ autoscaleInfoProvider: (original) => original() });
+    return;
+  }
   candleSeries.applyOptions({
     autoscaleInfoProvider: (original) => {
       const res = original();
-      if (!res?.priceRange || !prices.length) return res;
+      if (!res?.priceRange) return res;
       let min = res.priceRange.minValue;
       let max = res.priceRange.maxValue;
-      for (const p of prices) {
+      for (const p of extras) {
         if (p < min) min = p;
         if (p > max) max = p;
       }
-      const mid = currentPrice ?? (min + max) / 2;
       const span = Math.max(max - min, 1);
-      const move = Math.max(...prices.map(p => Math.abs(p - mid)));
-      const head = Math.max(span * 0.08, move * 1.35);
-      return { priceRange: { minValue: min - span * 0.05, maxValue: max + head } };
+      return { priceRange: { minValue: min - span * 0.06, maxValue: max + span * 0.16 } };
     }
   });
+}
+
+function applyRightPad() {
+  if (!chart) return;
+  chart.timeScale().applyOptions({
+    rightOffset: forecastBars.length ? forecastBars.length + 2 : 4
+  });
+}
+
+function chartBarSpacing() {
+  const ts = chart?.timeScale();
+  if (!ts) return 6;
+  const fromOpts = ts.options()?.barSpacing;
+  if (fromOpts > 0) return fromOpts;
+  const range = ts.getVisibleLogicalRange();
+  if (range && range.to !== range.from) {
+    const a = ts.logicalToCoordinate(range.from);
+    const b = ts.logicalToCoordinate(range.from + 1);
+    if (a != null && b != null) return Math.abs(b - a);
+  }
+  return 6;
+}
+
+function paintForecastOverlay() {
+  const svg = forecastLayer.value;
+  if (!svg) return;
+
+  const host = chartContainer.value;
+  const rect = host?.getBoundingClientRect();
+  const w = Math.floor(rect?.width || 0);
+  const h = Math.floor(rect?.height || 0);
+  svg.setAttribute('viewBox', `0 0 ${Math.max(w, 1)} ${Math.max(h, 1)}`);
+  svg.setAttribute('width', String(Math.max(w, 1)));
+  svg.setAttribute('height', String(Math.max(h, 1)));
+
+  if (!chart || !candleSeries || !forecastBars.length || !lastBar || w <= 0 || h <= 0) {
+    svg.innerHTML = '';
+    return;
+  }
+
+  const ts = chart.timeScale();
+  const lastX = ts.timeToCoordinate(lastBar.time);
+  if (lastX == null) {
+    svg.innerHTML = '';
+    return;
+  }
+
+  const lastLogical = ts.coordinateToLogical(lastX);
+  if (lastLogical == null) {
+    svg.innerHTML = '';
+    return;
+  }
+
+  const spacing = chartBarSpacing();
+  const candleW = Math.max(1, spacing * 0.8);
+  const strokeW = spacing >= 8 ? 1.25 : spacing >= 4 ? 1 : 0.7;
+  const fontPx = spacing >= 10 ? 10 : spacing >= 6 ? 9 : 0;
+  const labelGap = Math.max(3, spacing * 0.4);
+  const dividerX = lastX + spacing * 0.5;
+  const parts = [
+    `<line x1="${dividerX}" y1="8" x2="${dividerX}" y2="${h - 22}" stroke="rgba(139,148,158,0.35)" stroke-dasharray="3 3" stroke-width="1" />`
+  ];
+
+  forecastBars.forEach((bar, i) => {
+    const x = ts.logicalToCoordinate(lastLogical + 1 + i);
+    if (x == null) return;
+
+    const yOpen = candleSeries.priceToCoordinate(bar.open);
+    const yClose = candleSeries.priceToCoordinate(bar.close);
+    const yHigh = candleSeries.priceToCoordinate(bar.high);
+    const yLow = candleSeries.priceToCoordinate(bar.low);
+    if ([yOpen, yClose, yHigh, yLow].some(v => v == null)) return;
+
+    const up = bar.close >= bar.open;
+    const color = up ? '#00d488' : '#ff4d4d';
+    const fill = up ? 'rgba(0,212,136,0.18)' : 'rgba(255,77,77,0.18)';
+    const top = Math.min(yOpen, yClose);
+    const bodyH = Math.max(Math.abs(yClose - yOpen), strokeW);
+    const style = bar.horizon ? HORIZON_STYLE[bar.horizon] : null;
+    const labelY = (up || yHigh < fontPx + 6) ? yHigh - labelGap : yLow + labelGap + fontPx;
+
+    parts.push(
+      `<line x1="${x}" y1="${yHigh}" x2="${x}" y2="${yLow}" stroke="${color}" stroke-width="${strokeW}" stroke-opacity="0.55" />`,
+      `<rect x="${x - candleW / 2}" y="${top}" width="${candleW}" height="${bodyH}" fill="${fill}" stroke="${color}" stroke-width="${strokeW}" />`
+    );
+    if (fontPx && style) {
+      parts.push(
+        `<text x="${x}" y="${labelY}" fill="${style.color}" font-size="${fontPx}" font-family="JetBrains Mono, monospace" text-anchor="middle">${style.label}</text>`
+      );
+    }
+  });
+
+  svg.innerHTML = parts.join('');
 }
 
 function applyPredictionOverlay(candles) {
@@ -329,56 +591,44 @@ function applyPredictionOverlay(candles) {
 
   const targets = predictionTargets();
   if (!targets.length) {
-    applyScaleForTargets([]);
+    applyScaleForForecast([]);
     return;
   }
 
-  const currentPrice = candles[candles.length - 1].close;
-  const lastTime = candles[candles.length - 1].time;
-  const startTime = nextSessionUnix(lastTime);
-  const horizonDays = { '1d': 1, '5d': 5, '30d': 30 };
+  const last = candles[candles.length - 1];
   const currency = quote.value?.currency;
-  const sorted = [...targets].sort((a, b) => {
-    const order = { '1d': 1, '5d': 2, '30d': 3 };
-    return (order[a.horizon] || 99) - (order[b.horizon] || 99);
-  });
+  const sorted = sortedTargets(targets);
+  const bars = buildForecastCandles(last, sorted, candles);
+  if (!bars.length) return;
+
+  forecastBars = bars;
+  applyScaleForForecast(bars);
+  applyRightPad();
 
   for (const p of sorted) {
     const style = HORIZON_STYLE[p.horizon] || { color: '#8b949e', label: p.horizon };
-    const target = p.targetPrice;
     const textColor = p.prediction === 'UP' ? 'text-bull' : p.prediction === 'DOWN' ? 'text-bear' : 'text-neutral';
     predictionLegend.value.push({
       horizon: p.horizon,
       label: style.label,
-      price: formatPrice(target, currency),
+      price: formatPrice(p.targetPrice, currency),
       date: formatShortDate(p.targetDate),
       color: style.color,
       textColor
     });
-
-    priceLines.push(candleSeries.createPriceLine({
-      price: target,
-      color: style.color,
-      lineWidth: 1,
-      lineStyle: 2,
-      axisLabelVisible: true,
-      title: ''
-    }));
   }
 
-  applyScaleForTargets(targets, currentPrice);
+  try {
+    candleSeries.setMarkers([{
+      time: last.time,
+      position: 'aboveBar',
+      color: '#8b949e',
+      shape: 'circle',
+      text: t('chart.now')
+    }]);
+  } catch { /* ignore */ }
 
-  // Path starts on the next unprinted session at the last close, then eases
-  // in toward the longest target so a 30-day move does not spike off the last bar.
-  const farthest = [...sorted].reverse().find(p => p.targetPrice != null);
-  if (!farthest) return;
-  const days = horizonDays[farthest.horizon] || 30;
-  const endTime = farthest.targetDate
-    ? Math.max(dateToUnix(farthest.targetDate), tradingDaysAhead(lastTime, days))
-    : tradingDaysAhead(lastTime, days);
-  if (endTime <= startTime) return;
-
-  forecastSeries.setData(easeInPath(startTime, endTime, currentPrice, farthest.targetPrice));
+  paintForecastOverlay();
 }
 
 function activeTimeframe() {
@@ -399,7 +649,10 @@ function mappedCandles() {
   const candles = [], volumes = [];
   for (const c of raw) {
     const base = isIntraday ? c.date.replace(' ', 'T') : c.date + 'T00:00:00';
-    const t = Math.floor(Date.parse(base + 'Z') / 1000);
+    const parsed = new Date(Date.parse(base + 'Z'));
+    const t = isIntraday
+      ? Math.floor(parsed.getTime() / 1000)
+      : { year: parsed.getUTCFullYear(), month: parsed.getUTCMonth() + 1, day: parsed.getUTCDate() };
     candles.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
     volumes.push({ time: t, value: c.volume, color: c.close >= c.open ? 'rgba(0,212,136,0.28)' : 'rgba(255,77,77,0.28)' });
   }
@@ -421,7 +674,8 @@ function renderData() {
   lastBar = { ...candles[candles.length - 1] };
   applyPredictionOverlay(candles);
   chart.timeScale().fitContent();
-  chart.timeScale().applyOptions({ rightOffset: 8 });
+  applyRightPad();
+  paintForecastOverlay();
 }
 
 async function loadTimeframe(tf) {
@@ -463,7 +717,10 @@ onMounted(() => {
   ro = new ResizeObserver(entries => {
     for (const e of entries) {
       const w = Math.floor(e.contentRect.width), h = Math.floor(e.contentRect.height);
-      if (w > 0 && h > 0) chart?.applyOptions({ width: w, height: h });
+      if (w > 0 && h > 0) {
+        chart?.applyOptions({ width: w, height: h });
+        paintForecastOverlay();
+      }
     }
   });
   ro.observe(chartContainer.value);
@@ -484,6 +741,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onExpandKey);
   clearPredictionOverlay();
   ro?.disconnect();
+  try { chart?.timeScale().unsubscribeVisibleLogicalRangeChange(paintForecastOverlay); } catch { /* ignore */ }
   chart?.remove();
   chart = null;
 });
@@ -496,8 +754,10 @@ watch(
   () => {
     if (!chart || !candleSeries) return;
     applyPredictionOverlay(mappedCandles().candles);
+    applyRightPad();
+    paintForecastOverlay();
   },
-  { deep: true }
+  { deep: true, immediate: true }
 );
 
 // Live: nudge the last candle on each streamed trade for the charted symbol
@@ -520,3 +780,32 @@ watch(() => quote.value?.price, (p) => {
   prevPrice = p;
 });
 </script>
+
+<style scoped>
+.forecast-swatch {
+  position: relative;
+  width: 7px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.forecast-swatch::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: currentColor;
+  transform: translateX(-50%);
+}
+.forecast-swatch::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 3px;
+  bottom: 3px;
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+</style>

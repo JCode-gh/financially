@@ -61,7 +61,7 @@
   <div v-else-if="verdict" class="px-4 sm:px-5 py-3 sm:py-4 border-b border-surface-300 flex-shrink-0">
     <div class="flex items-start gap-3 sm:gap-4">
       <div
-        class="verdict-stamp flex-shrink-0 h-14 min-w-14 sm:h-20 sm:min-w-20 px-2 rounded-xl"
+        class="verdict-stamp flex-shrink-0 h-14 min-w-14 sm:h-20 sm:min-w-20 px-2"
         :class="verdict.bg"
       >
         <span class="verdict-stamp-label text-xs sm:text-lg">{{ verdict.label }}</span>
@@ -87,7 +87,7 @@
     </div>
   </div>
 
-  <div v-else-if="loading" class="card analyzing-card px-4 py-4 overflow-hidden">
+  <div v-else-if="loading" class="analyzing-card px-4 py-4 overflow-hidden border-b border-surface-300">
     <div class="flex items-center gap-3.5">
       <div class="analyzing-orb" aria-hidden="true">
         <span class="analyzing-ring"></span>
@@ -106,7 +106,7 @@
       <div class="analyzing-bar analyzing-bar--slow w-[68%]"></div>
     </div>
   </div>
-  <div v-else-if="predictionStore.error" class="card px-4 py-3 text-xs font-mono text-bear">
+  <div v-else-if="predictionStore.error" class="px-4 py-3 text-xs font-mono text-bear border-b border-surface-300">
     {{ predictionStore.error }}
   </div>
 </template>
@@ -308,7 +308,7 @@ async function rerun() {
 }
 .analyzing-bar {
   height: 7px;
-  border-radius: 999px;
+  border-radius: 0;
   background: linear-gradient(90deg, rgba(255,255,255,0.04), rgba(0,212,255,0.22), rgba(255,255,255,0.04));
   background-size: 200% 100%;
   animation: analyzingShimmer 1.6s ease-in-out infinite;
