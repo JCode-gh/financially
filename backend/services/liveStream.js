@@ -21,11 +21,6 @@ const THROTTLE_MS = 300; // max one tick per symbol per 300ms to each client
 
 export function initLiveStream(server) {
   const KEY = process.env.FINNHUB_API_KEY;
-  if (!KEY) {
-    console.log('   Live WS: ❌ (no FINNHUB_API_KEY)');
-    return;
-  }
-
   const wss = new WebSocketServer({ server, path: '/ws' });
   const clients = new Set();        // each client ws has a .symbols Set
   const subCounts = new Map();      // finnhubSymbol → active subscriber count
@@ -104,6 +99,11 @@ export function initLiveStream(server) {
       clients.delete(ws);
     });
   });
+
+  if (!KEY) {
+    console.log('   Live WS: idle (/ws open, no FINNHUB_API_KEY)');
+    return;
+  }
 
   connectUpstream();
   console.log('   Live WS: ✅ (/ws → Finnhub stream)');

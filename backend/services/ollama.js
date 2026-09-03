@@ -12,6 +12,7 @@ const SEARCH_FALLBACKS = ['qwen3:4b', 'qwen3', 'qwen2.5:3b', 'llama3.2'];
 let activeModel = WANTED;
 let searchModel = SEARCH_WANTED || WANTED;
 let lastPing = { ok: false, model: WANTED, searchModel, at: 0 };
+let lastOkAt = 0;
 
 function isChatModel(name) {
   return !/embed|vision/i.test(name);
@@ -65,11 +66,34 @@ export async function pingOllama() {
       models: names,
       at: Date.now()
     };
+    if (chosen) lastOkAt = lastPing.at;
     return lastPing;
   } catch {
-    lastPing = { ok: false, model: activeModel, searchModel, wanted: WANTED, at: Date.now() };
+    // /api/tags often times out while a chat generate is on the GPU.
+    const hold = lastOkAt && Date.now() - lastOkAt < 180_000;
+    lastPing = {
+      ok: hold,
+      model: activeModel,
+      searchModel,
+      wanted: WANTED,
+      at: Date.now(),
+      busy: hold
+    };
     return lastPing;
   }
+}
+
+export function noteOllamaSuccess(model) {
+  if (model) activeModel = model;
+  lastOkAt = Date.now();
+  lastPing = {
+    ...lastPing,
+    ok: true,
+    model: activeModel,
+    searchModel: searchModel || activeModel,
+    at: lastOkAt,
+    busy: false
+  };
 }
 
 async function ensureModel() {
@@ -550,6 +574,7 @@ async function chatJson(messages, opts = {}) {
     options: { temperature: opts.temperature ?? 0.28, num_predict: opts.numPredict ?? 480 },
     messages
   }, { timeout: opts.timeout ?? TIMEOUT });
+  noteOllamaSuccess(activeModel);
   return parseJsonContent(res.data?.message?.content || '{}');
 }
 

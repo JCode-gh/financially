@@ -3,7 +3,8 @@ import {
   ensureOllamaReady,
   ollamaHost,
   currentOllamaModel,
-  currentSearchModel
+  currentSearchModel,
+  noteOllamaSuccess
 } from './ollama.js';
 
 const CHAT_TIMEOUT = Number(process.env.OLLAMA_CHAT_TIMEOUT_MS || 180000);
@@ -90,6 +91,7 @@ export async function ollamaChatOnce(messages, { model, tools, timeout, temperat
   const res = await axios.post(`${ollamaHost()}/api/chat`, body, {
     timeout: timeout ?? CHAT_TIMEOUT
   });
+  noteOllamaSuccess(body.model);
   return res.data?.message || { role: 'assistant', content: '' };
 }
 
@@ -124,6 +126,7 @@ export async function streamOllamaChat(messages, { model, onToken, signal, tempe
       }
     }
   }
+  if (full) noteOllamaSuccess(model || currentOllamaModel());
   return full;
 }
 

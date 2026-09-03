@@ -11,7 +11,7 @@
     <span class="text-surface-300">|</span>
     <span :class="session.open ? 'text-bull' : 'text-gray-500'">{{ $t('status.us', { session: session.label }) }}</span>
     <span class="text-surface-300">|</span>
-    <span :class="ollamaOk ? 'text-accent' : 'text-gray-600'">{{ ollamaOk ? $t('status.llama') : $t('status.llamaOff') }}</span>
+    <span :class="ollamaOk ? 'text-accent' : 'text-gray-600'">{{ ollamaLabel }}</span>
     <span v-if="market.lastUpdated" class="hidden sm:inline text-gray-600">
       {{ $t('status.quotes', { ago: timeAgo(market.lastUpdated) }) }}
     </span>
@@ -24,18 +24,25 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useMarketStore } from '../../stores/marketStore.js';
 import { usePredictionStore } from '../../stores/predictionStore.js';
 import { useUiStore } from '../../stores/uiStore.js';
 import { timeAgo, formatClock } from '../../utils/format.js';
 import { usSession } from '../../utils/marketHours.js';
 
+const { t } = useI18n();
 const market = useMarketStore();
 const prediction = usePredictionStore();
 const ui = useUiStore();
 const clock = ref(formatClock());
 const session = ref(usSession());
 const ollamaOk = computed(() => !!ui.health?.ollama?.ok);
+const ollamaLabel = computed(() => {
+  if (!ollamaOk.value) return t('status.llamaOff');
+  const name = String(ui.health?.ollama?.model || '').replace(/:latest$/i, '');
+  return name || t('status.llama');
+});
 let timer;
 
 onMounted(() => {

@@ -119,7 +119,10 @@ const draft = ref('');
 const scroller = ref(null);
 const box = ref(null);
 
-const ollamaOff = computed(() => ui.health && ui.health.ollama && ui.health.ollama.ok === false);
+const ollamaOff = computed(() => {
+  if (chat.sending || chat.messages.some(m => m.role === 'assistant' && m.content)) return false;
+  return ui.health?.ollama?.ok === false;
+});
 
 const phaseLabel = computed(() => {
   const map = {
