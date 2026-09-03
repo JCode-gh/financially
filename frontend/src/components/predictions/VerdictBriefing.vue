@@ -75,7 +75,7 @@ const { t } = useI18n();
 
 const considered = computed(() => props.briefing?.considered || []);
 const skipped = computed(() => props.briefing?.skipped || []);
-const headlines = computed(() => (props.briefing?.headlines || []).filter(h => h?.title).slice(0, 6));
+const headlines = computed(() => (props.briefing?.headlines || []).filter(h => h?.title).slice(0, 8));
 const world = computed(() => (props.briefing?.world || []).filter(w => w?.title).slice(0, 6));
 const notesReply = computed(() => String(props.briefing?.notesReply || '').trim());
 const overlooked = computed(() => {

@@ -220,7 +220,7 @@ function hasReadableCopy(article) {
   return isUsefulText(article.body || article.summary || article.description || article.text || '', title);
 }
 
-function preferWithBody(items, n = 5, ticker = '') {
+function preferWithBody(items, n = 8, ticker = '') {
   const movers = items.filter(a => isPriceMovingArticle(a, ticker) && hasReadableCopy(a));
   const withBody = movers.filter(a => a.body);
   const without = movers.filter(a => !a.body);
@@ -281,7 +281,7 @@ export async function enrichArticles(articles, corpus = articles, ticker = '') {
   return preferWithBody(enriched.map(a => ({
     ...a,
     url: clickableUrl(a, corpus)
-  })).filter(a => a.url), 5, ticker);
+  })).filter(a => a.url), 8, ticker);
 }
 
 export function completeSentences(text, max = 420) {

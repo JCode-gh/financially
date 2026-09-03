@@ -263,7 +263,7 @@ const verdict = computed(() => {
         : (pred.aiError ? t('verdict.llamaOffline', { reason: pred.reasons?.[0] || t('verdict.quantOnly') }) : pred.reasons?.[0] || null)),
     why,
     risks,
-    sources: (pred.sources || []).filter(s => s?.title && s?.url).slice(0, 5),
+    sources: (pred.sources || []).filter(s => s?.title && s?.url),
     digest: String(pred.sourcesDigest || '').trim(),
     briefing: pred.briefing || null,
     overlooked: pred.overlooked || pred.ai?.overlooked || [],

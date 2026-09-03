@@ -132,7 +132,7 @@ export function buildBriefing({
       : 'none',
     considered,
     skipped,
-    headlines: headlines.slice(0, 6),
+    headlines: headlines.slice(0, 8),
     world: hits.slice(0, 6)
   };
 }

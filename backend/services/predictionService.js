@@ -162,6 +162,65 @@ function packSources(items, summaries = [], digest = '') {
   };
 }
 
+function sourceKey(s) {
+  const url = String(s?.url || '').trim().toLowerCase();
+  if (url) return url;
+  return String(s?.title || '').trim().toLowerCase();
+}
+
+function mergeSourcesWithBriefing(packed, briefing, articles) {
+  const articleByTitle = new Map();
+  for (const a of articles || []) {
+    const title = String(a.headline || a.title || '').trim();
+    if (title) articleByTitle.set(title.toLowerCase(), a);
+  }
+
+  const indexed = new Map();
+  for (const s of packed?.sources || []) {
+    indexed.set(sourceKey(s), s);
+  }
+
+  const merged = [];
+  const seen = new Set();
+  for (const h of briefing?.headlines || []) {
+    const row = {
+      title: h.title,
+      url: h.url,
+      source: h.source || '',
+      summary: ''
+    };
+    const key = sourceKey(row);
+    if (!row.title || !row.url || /news\.google\.com\/search\?/i.test(row.url) || seen.has(key)) continue;
+    seen.add(key);
+    const enriched = indexed.get(key);
+    if (enriched?.summary) {
+      merged.push(enriched);
+      continue;
+    }
+    const raw = articleByTitle.get(row.title.toLowerCase());
+    merged.push({
+      ...row,
+      summary: fallbackSnippet(
+        raw?.summary || raw?.description || raw?.body || raw?.text || '',
+        row.title
+      )
+    });
+  }
+
+  for (const s of packed?.sources || []) {
+    const key = sourceKey(s);
+    if (!seen.has(key) && s.title && s.url && !/news\.google\.com\/search\?/i.test(s.url)) {
+      seen.add(key);
+      merged.push(s);
+    }
+  }
+
+  return {
+    digest: packed?.digest || '',
+    sources: merged
+  };
+}
+
 async function finishSources(articles, lang, ticker = '') {
   const items = (articles || [])
     .filter(a => isPriceMovingArticle(a, ticker) && isUsefulText(a.body || a.text || a.summary || '', a.headline || a.title || ''))
@@ -198,13 +257,14 @@ function packPayload(result, { ai, aiError, articles, quote, world, style, notes
     const machine = worstClaimStatus(checkUserClaims(notes, world?.hits || []));
     if (machine) briefing.claimCheck = machine;
   }
+  const mergedSources = mergeSourcesWithBriefing(packed, briefing, articles);
   return {
     ...result,
     ai: decision,
     aiError,
     newsUsed: (articles || []).length,
-    sourcesDigest: packed.digest,
-    sources: packed.sources,
+    sourcesDigest: mergedSources.digest,
+    sources: mergedSources.sources,
     briefing,
     overlooked: decision?.overlooked || []
   };
