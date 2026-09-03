@@ -1,6 +1,6 @@
 <template>
   <nav
-    class="lg:hidden flex-shrink-0 bg-surface-100 border-t border-surface-300 grid grid-cols-4"
+    class="lg:hidden flex-shrink-0 bg-surface-100 border-t border-surface-300 grid grid-cols-5"
     style="padding-bottom: env(safe-area-inset-bottom)"
     :aria-label="$t('nav.menu')"
   >
@@ -24,6 +24,7 @@
           <line x1="8" y1="12" x2="16" y2="12" />
           <line x1="8" y1="16" x2="13" y2="16" />
         </template>
+        <path v-else-if="link.name === 'chat'" d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
       </svg>
       {{ link.label }}
     </RouterLink>
@@ -42,7 +43,8 @@ const links = computed(() => [
   { to: '/', name: 'dashboard', extra: [], label: t('nav.terminal') },
   { to: '/watchlist', name: 'stocks', extra: ['stock'], label: t('nav.watchlist') },
   { to: '/opportunities', name: 'opportunities', extra: [], label: t('nav.picks') },
-  { to: '/news', name: 'news', extra: [], label: t('nav.news') }
+  { to: '/news', name: 'news', extra: [], label: t('nav.news') },
+  { to: '/chat', name: 'chat', extra: [], label: t('nav.chat') }
 ]);
 
 function isActive(link) {

@@ -195,3 +195,38 @@ export async function getGoogleStockNews(ticker, name) {
     return out.slice(0, 40);
   });
 }
+
+const QUERY_LOCALES = {
+  nl: [
+    { hl: 'nl', gl: 'BE', ceid: 'BE:nl' },
+    { hl: 'nl', gl: 'NL', ceid: 'NL:nl' },
+    { hl: 'en', gl: 'US', ceid: 'US:en' }
+  ],
+  en: [
+    { hl: 'en', gl: 'US', ceid: 'US:en' },
+    { hl: 'en', gl: 'GB', ceid: 'GB:en' }
+  ]
+};
+
+export async function searchGoogleNews(query, { lang = 'en' } = {}) {
+  const q = String(query || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+  if (!q) return [];
+  const locales = QUERY_LOCALES[lang === 'nl' ? 'nl' : 'en'];
+  const keyed = `${q} when:14d`;
+
+  return cached(`gnews_q_${lang}_${keyed}`, 8 * 60_000, async () => {
+    const batches = await pLimit(
+      locales.map(loc => () => fetchFeed(googleSearchUrl(keyed, loc), 'Google News')),
+      2
+    );
+    const seen = new Set();
+    const out = [];
+    for (const item of batches.flat()) {
+      const key = (item.headline || '').toLowerCase().slice(0, 80);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(item);
+    }
+    return out.slice(0, 12);
+  });
+}

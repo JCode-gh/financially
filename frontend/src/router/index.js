@@ -4,6 +4,7 @@ import StockListView from '../views/StockListView.vue';
 import StockDetailView from '../views/StockDetailView.vue';
 import NewsView from '../views/NewsView.vue';
 import OpportunitiesView from '../views/OpportunitiesView.vue';
+import ChatView from '../views/ChatView.vue';
 import NotFoundView from '../views/NotFoundView.vue';
 
 const routes = [
@@ -12,6 +13,7 @@ const routes = [
   { path: '/stock/:symbol([^/]+)', name: 'stock', component: StockDetailView },
   { path: '/news', name: 'news', component: NewsView },
   { path: '/opportunities', name: 'opportunities', component: OpportunitiesView },
+  { path: '/chat', name: 'chat', component: ChatView },
   { path: '/:pathMatch(.*)*', name: 'notfound', component: NotFoundView }
 ];
 

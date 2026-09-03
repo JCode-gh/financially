@@ -67,6 +67,7 @@ const pages = computed(() => [
   { id: 'wl', kind: t('common.go'), label: t('nav.watchlist'), hint: '/watchlist', run: () => router.push({ name: 'stocks' }) },
   { id: 'picks', kind: t('common.go'), label: t('nav.picks'), hint: '/opportunities', run: () => router.push({ name: 'opportunities' }) },
   { id: 'news', kind: t('common.go'), label: t('nav.news'), hint: '/news', run: () => router.push({ name: 'news' }) },
+  { id: 'chat', kind: t('common.go'), label: t('nav.chat'), hint: '/chat', run: () => router.push({ name: 'chat' }) },
   {
     id: 'mode',
     kind: t('mode.group'),

@@ -28,6 +28,17 @@
         {{ $t('common.addToList') }}
       </button>
       <button
+        type="button"
+        class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-surface-300 text-gray-400 text-xs font-mono hover:text-accent hover:border-accent/40 transition-colors flex-shrink-0"
+        @click="askAbout"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
+        </svg>
+        <span class="hidden sm:inline">{{ $t('chat.askAbout', { symbol }) }}</span>
+        <span class="sm:hidden">{{ $t('nav.chat') }}</span>
+      </button>
+      <button
         v-if="ui.isPro"
         @click="showTradeSetup = true"
         class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border border-accent/50 text-accent text-xs font-mono hover:bg-accent/10 transition-colors flex-shrink-0"
@@ -97,6 +108,10 @@ const digest = computed(() => String(desk()?.sourcesDigest || '').trim());
 function goBack() {
   if (window.history.length > 1) router.back();
   else router.push({ name: 'dashboard' });
+}
+
+function askAbout() {
+  router.push({ name: 'chat', query: { symbol: symbol.value } });
 }
 
 async function addToList() {

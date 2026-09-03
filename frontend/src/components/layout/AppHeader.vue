@@ -231,7 +231,8 @@ const links = computed(() => [
   { to: '/', name: 'dashboard', label: t('nav.terminal'), extra: [] },
   { to: '/watchlist', name: 'stocks', label: t('nav.watchlist'), extra: ['stock'] },
   { to: '/opportunities', name: 'opportunities', label: t('nav.picks'), extra: [] },
-  { to: '/news', name: 'news', label: t('nav.news'), extra: [] }
+  { to: '/news', name: 'news', label: t('nav.news'), extra: [] },
+  { to: '/chat', name: 'chat', label: t('nav.chat'), extra: [] }
 ]);
 
 function setMode(mode) {

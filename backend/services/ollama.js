@@ -4,17 +4,21 @@ import { isUsefulText } from '../lib/articleBody.js';
 
 const HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
 const WANTED = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+const SEARCH_WANTED = (process.env.OLLAMA_SEARCH_MODEL || '').trim();
 const TIMEOUT = Number(process.env.OLLAMA_TIMEOUT_MS || 45000);
 const FALLBACKS = ['llama3.2', 'llama3.1', 'llama3', 'qwen2.5', 'qwen2', 'mistral', 'gemma3', 'gemma2'];
+const SEARCH_FALLBACKS = ['qwen3:4b', 'qwen3', 'qwen2.5:3b', 'llama3.2'];
 
 let activeModel = WANTED;
-let lastPing = { ok: false, model: WANTED, at: 0 };
+let searchModel = SEARCH_WANTED || WANTED;
+let lastPing = { ok: false, model: WANTED, searchModel, at: 0 };
 
 function isChatModel(name) {
   return !/embed|vision/i.test(name);
 }
 
 function matchModel(names, wanted) {
+  if (!wanted) return '';
   return names.find(n => n === wanted || n === `${wanted}:latest` || n.startsWith(`${wanted}:`));
 }
 
@@ -23,8 +27,26 @@ function pickInstalledModel(names) {
   return matchModel(chat, WANTED) || FALLBACKS.map(w => matchModel(chat, w)).find(Boolean) || chat[0] || '';
 }
 
+function pickSearchModel(names, chatModel) {
+  const chat = (names || []).filter(isChatModel);
+  if (SEARCH_WANTED) return matchModel(chat, SEARCH_WANTED) || chatModel;
+  return SEARCH_FALLBACKS.map(w => matchModel(chat, w)).find(Boolean) || chatModel;
+}
+
+export function ollamaHost() {
+  return HOST;
+}
+
 export function ollamaConfig() {
-  return { host: HOST, model: activeModel };
+  return { host: HOST, model: activeModel, searchModel };
+}
+
+export function currentOllamaModel() {
+  return activeModel;
+}
+
+export function currentSearchModel() {
+  return searchModel || activeModel;
 }
 
 export async function pingOllama() {
@@ -33,10 +55,19 @@ export async function pingOllama() {
     const names = (res.data?.models || []).map(m => m.name);
     const chosen = pickInstalledModel(names);
     activeModel = chosen || WANTED;
-    lastPing = { ok: !!chosen, model: activeModel, wanted: WANTED, models: names, at: Date.now() };
+    searchModel = pickSearchModel(names, activeModel) || activeModel;
+    lastPing = {
+      ok: !!chosen,
+      model: activeModel,
+      searchModel,
+      wanted: WANTED,
+      searchWanted: SEARCH_WANTED || null,
+      models: names,
+      at: Date.now()
+    };
     return lastPing;
   } catch {
-    lastPing = { ok: false, model: activeModel, wanted: WANTED, at: Date.now() };
+    lastPing = { ok: false, model: activeModel, searchModel, wanted: WANTED, at: Date.now() };
     return lastPing;
   }
 }
@@ -45,6 +76,10 @@ async function ensureModel() {
   if (lastPing.ok && Date.now() - lastPing.at < 60_000) return;
   await pingOllama();
   if (!lastPing.ok) throw new Error(`Ollama offline (${activeModel})`);
+}
+
+export async function ensureOllamaReady() {
+  await ensureModel();
 }
 
 export function lastOllamaStatus() {

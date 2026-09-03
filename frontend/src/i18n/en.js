@@ -8,6 +8,7 @@ export default {
     watchlist: 'Watchlist',
     picks: 'Picks',
     news: 'News',
+    chat: 'Ask',
     menu: 'Menu',
     close: 'Close'
   },
@@ -423,5 +424,35 @@ export default {
     quote: 'Failed to load quote',
     news: 'Failed to load news',
     chartShort: 'Failed to load'
+  },
+  chat: {
+    title: 'Ask the desk',
+    you: 'You',
+    desk: 'Desk',
+    placeholder: 'Ask about a stock, a headline, or a market idea…',
+    send: 'Send',
+    stop: 'Stop',
+    newChat: 'New',
+    thinking: 'Thinking…',
+    searching: 'Searching for extra context…',
+    reading: 'Reading the desk tape…',
+    answering: 'Writing…',
+    empty: 'Ask anything. When local headlines are thin, the desk runs a search first.',
+    emptyHint: 'Uses quotes, the desk call, headlines, then web/news search if needed.',
+    sources: 'Sources',
+    searched: 'Search + sources',
+    context: '{symbol}',
+    clearContext: 'Clear ticker context',
+    attach: 'Use {symbol}',
+    offline: 'Qwen is offline — start Ollama and pull a chat model.',
+    failed: 'The desk could not answer. Try again.',
+    disclaimer: 'Not financial advice. Check the sources before you act.',
+    askAbout: 'Ask about {symbol}',
+    suggestions: {
+      move: 'Why is {symbol} moving?',
+      pe: 'What does a P/E ratio tell me?',
+      market: 'What matters in the market today?',
+      earnings: 'What should I watch before earnings?'
+    }
   }
 };

@@ -8,6 +8,7 @@ export default {
     watchlist: 'Volglijst',
     picks: 'Keuzes',
     news: 'Nieuws',
+    chat: 'Vraag',
     menu: 'Menu',
     close: 'Sluiten'
   },
@@ -423,5 +424,35 @@ export default {
     quote: 'Koers laden mislukt',
     news: 'Nieuws laden mislukt',
     chartShort: 'Laden mislukt'
+  },
+  chat: {
+    title: 'Vraag de desk',
+    you: 'Jij',
+    desk: 'Desk',
+    placeholder: 'Vraag over een aandeel, een kop of een marktidee…',
+    send: 'Stuur',
+    stop: 'Stop',
+    newChat: 'Nieuw',
+    thinking: 'Nadenken…',
+    searching: 'Extra context zoeken…',
+    reading: 'Desk-tape lezen…',
+    answering: 'Schrijven…',
+    empty: 'Stel gerust een vraag. Als het lokale nieuws dun is, zoekt de desk eerst bij.',
+    emptyHint: 'Gebruikt koersen, het desk-advies, koppen, en web/nieuwszoeken indien nodig.',
+    sources: 'Bronnen',
+    searched: 'Zoektocht + bronnen',
+    context: '{symbol}',
+    clearContext: 'Tickercontext wissen',
+    attach: 'Gebruik {symbol}',
+    offline: 'Qwen is offline — start Ollama en haal een chatmodel op.',
+    failed: 'De desk kon niet antwoorden. Probeer opnieuw.',
+    disclaimer: 'Geen beleggingsadvies. Controleer de bronnen voor je iets doet.',
+    askAbout: 'Vraag over {symbol}',
+    suggestions: {
+      move: 'Waarom beweegt {symbol}?',
+      pe: 'Wat zegt een koers-winstverhouding?',
+      market: 'Wat speelt er vandaag op de markt?',
+      earnings: 'Waar let ik op voor cijfers?'
+    }
   }
 };

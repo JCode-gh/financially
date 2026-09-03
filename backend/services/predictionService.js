@@ -328,6 +328,12 @@ export function getPredictionHistory({ ticker, horizon, limit = 50, resolved } =
   }));
 }
 
+export function peekDeskCall(ticker, lang = 'en') {
+  const locale = lang === 'nl' ? 'nl' : 'en';
+  const key = `desk_${String(ticker || '').toUpperCase()}_${locale}_v18`;
+  return genCache.cache.get(key)?.data || null;
+}
+
 export function getPredictionsForTicker(ticker) {
   const db = getDB();
   const latest = db.prepare(`

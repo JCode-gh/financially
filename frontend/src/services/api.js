@@ -83,4 +83,78 @@ export const healthApi = {
   check: () => http.get('/health')
 };
 
+function parseSseBlock(block) {
+  let event = 'message';
+  const dataLines = [];
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+  }
+  if (!dataLines.length) return null;
+  try {
+    return { event, data: JSON.parse(dataLines.join('\n')) };
+  } catch {
+    return { event, data: { text: dataLines.join('\n') } };
+  }
+}
+
+export async function streamDeskChat({ messages, symbol, simple, lang, onEvent, signal } = {}) {
+  const res = await fetch(`${API_BASE_URL}/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      'Accept-Language': lang || readLocale()
+    },
+    body: JSON.stringify({
+      messages,
+      symbol: symbol || undefined,
+      simple: simple !== false,
+      lang: lang || readLocale()
+    }),
+    signal
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.error || 'Chat failed');
+    err.normalized = { message: body.error || 'Chat failed', status: res.status, code: body.code || null };
+    throw err;
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('Chat stream unavailable');
+
+  const decoder = new TextDecoder();
+  let buf = '';
+  let sawError = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const parts = buf.split('\n\n');
+    buf = parts.pop() || '';
+    for (const part of parts) {
+      const parsed = parseSseBlock(part);
+      if (!parsed) continue;
+      if (parsed.event === 'error') {
+        sawError = parsed.data;
+        continue;
+      }
+      if (onEvent) {
+        if (parsed.event === 'token') onEvent({ type: 'token', text: parsed.data.text || '' });
+        else if (parsed.event === 'status') onEvent({ type: 'status', phase: parsed.data.phase, query: parsed.data.query });
+        else if (parsed.event === 'done') onEvent({ type: 'done', ...parsed.data });
+      }
+    }
+  }
+
+  if (sawError) {
+    const err = new Error(sawError.message || 'Chat failed');
+    err.normalized = { message: sawError.message || 'Chat failed', status: 0, code: sawError.code || null };
+    throw err;
+  }
+}
+
 export default http;
