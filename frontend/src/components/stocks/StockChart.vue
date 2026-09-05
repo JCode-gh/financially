@@ -714,8 +714,9 @@ function applyScaleForForecast(bars) {
         if (p > max) max = p;
       }
       const span = Math.max(max - min, 1);
-      const topPad = forecastTurns.length ? 0.28 : 0.16;
-      return { priceRange: { minValue: min - span * 0.08, maxValue: max + span * topPad } };
+      const topPad = forecastTurns.length ? 0.48 : 0.16;
+      const botPad = forecastTurns.length ? 0.22 : 0.08;
+      return { priceRange: { minValue: min - span * botPad, maxValue: max + span * topPad } };
     }
   });
 }
@@ -723,7 +724,7 @@ function applyScaleForForecast(bars) {
 function applyRightPad() {
   if (!chart) return;
   chart.timeScale().applyOptions({
-    rightOffset: forecastBars.length ? forecastBars.length + 4 : 4
+    rightOffset: forecastBars.length ? forecastBars.length + 8 : 4
   });
 }
 
@@ -766,6 +767,93 @@ function wrapWhy(text, max = 24) {
 
 function boxesOverlap(a, b, pad = 4) {
   return !(a.x + a.w + pad < b.x || b.x + b.w + pad < a.x || a.y + a.h + pad < b.y || b.y + b.h + pad < a.y);
+}
+
+function candleObstacle(x, yHigh, yLow, candleW) {
+  if (x == null || yHigh == null || yLow == null) return null;
+  const top = Math.min(yHigh, yLow);
+  const bot = Math.max(yHigh, yLow);
+  const padX = Math.max(5, candleW * 0.85);
+  return {
+    x: x - padX,
+    y: top - 5,
+    w: padX * 2,
+    h: Math.max(bot - top, 8) + 10
+  };
+}
+
+function envelopeForSpan(x, width, obstacles) {
+  let top = Infinity;
+  let bottom = -Infinity;
+  const right = x + width;
+  for (const o of obstacles) {
+    if (o.x + o.w < x || o.x > right) continue;
+    top = Math.min(top, o.y);
+    bottom = Math.max(bottom, o.y + o.h);
+  }
+  return { top, bottom, hit: Number.isFinite(top) };
+}
+
+function hitsForbidden(box, obstacles, placed, pad = 8) {
+  if (obstacles.some(o => boxesOverlap(box, o, pad))) return true;
+  return placed.some(p => boxesOverlap(p, box, 6));
+}
+
+function placeCallout({ anchorX, anchorY, boxW, boxH, preferAbove, obstacles, placed, w, h }) {
+  const gap = 12;
+  const margin = 4;
+  const floor = h - 22;
+  const slides = [0, 28, -28, 56, -56, 84, -84, boxW * 0.7, -boxW * 0.7, boxW, -boxW, 180, 320, -180];
+  const sides = preferAbove ? ['above', 'below'] : ['below', 'above'];
+  const candidates = [];
+
+  for (const side of sides) {
+    for (const dx of slides) {
+      const bx = Math.max(margin, Math.min(anchorX - boxW / 2 + dx, w - boxW - margin));
+      const env = envelopeForSpan(bx, boxW, obstacles);
+      const by = side === 'above'
+        ? (env.hit ? env.top - gap : anchorY - 16) - boxH
+        : (env.hit ? env.bottom + gap : anchorY + 16);
+      if (by < margin || by + boxH > floor) continue;
+      const box = { x: bx, y: by, w: boxW, h: boxH };
+      if (hitsForbidden(box, obstacles, placed, 8)) continue;
+      const tip = side === 'above' ? by + boxH : by;
+      const dist = Math.abs(bx + boxW / 2 - anchorX) + Math.abs(tip - anchorY);
+      candidates.push({ box, dist, side });
+    }
+  }
+
+  if (candidates.length) {
+    candidates.sort((a, b) => a.dist - b.dist);
+    return candidates[0];
+  }
+
+  const parks = [
+    { x: margin, y: margin },
+    { x: Math.max(margin, w - boxW - margin), y: margin },
+    { x: margin, y: floor - boxH },
+    { x: Math.max(margin, w - boxW - margin), y: floor - boxH }
+  ];
+  for (const p of parks) {
+    const box = { x: p.x, y: p.y, w: boxW, h: boxH };
+    if (p.y < margin || p.y + boxH > floor) continue;
+    if (!hitsForbidden(box, obstacles, placed, 8)) {
+      return { box, dist: 999, side: p.y <= margin ? 'above' : 'below' };
+    }
+  }
+
+  const global = envelopeForSpan(0, w, obstacles);
+  const forcedY = global.hit ? global.top - gap - boxH : margin;
+  const box = {
+    x: Math.max(margin, Math.min(anchorX - boxW / 2, w - boxW - margin)),
+    y: Math.min(Math.max(margin, forcedY), Math.max(margin, floor - boxH)),
+    w: boxW,
+    h: boxH
+  };
+  if (!hitsForbidden(box, obstacles, placed, 8)) return { box, dist: 9999, side: 'above' };
+  box.y = margin;
+  if (!hitsForbidden(box, obstacles, placed, 4)) return { box, dist: 9999, side: 'above' };
+  return null;
 }
 
 function paintForecastOverlay() {
@@ -823,16 +911,69 @@ function paintForecastOverlay() {
     ? candleSeries.priceToCoordinate(forecastLevels.resistance)
     : null;
   const guideEnd = Math.max(dividerX + 24, w - 10);
+
+  const obstacles = [];
+  for (const c of mappedCandles().candles || []) {
+    const o = candleObstacle(
+      ts.timeToCoordinate(c.time),
+      candleSeries.priceToCoordinate(c.high),
+      candleSeries.priceToCoordinate(c.low),
+      candleW
+    );
+    if (o) obstacles.push(o);
+  }
+  forecastBars.forEach((bar, i) => {
+    const o = candleObstacle(
+      ts.logicalToCoordinate(lastLogical + 1 + i),
+      candleSeries.priceToCoordinate(bar.high),
+      candleSeries.priceToCoordinate(bar.low),
+      candleW
+    );
+    if (o) obstacles.push(o);
+  });
+
+  const levelLabel = (text, y, color, below) => {
+    const approxW = text.length * 5.6 + 8;
+    const boxH = 12;
+    const bx = Math.max(4, guideEnd - approxW);
+    const rawY = below ? y + 4 : y - boxH - 2;
+    const box = { x: bx, y: rawY, w: approxW, h: boxH };
+    if (hitsForbidden(box, obstacles, [], 6)) {
+      const env = envelopeForSpan(bx, approxW, obstacles);
+      if (env.hit) {
+        const up = env.top - 4 - boxH;
+        const dn = env.bottom + 4;
+        box.y = (up >= 4 && !hitsForbidden({ ...box, y: up }, obstacles, [], 6))
+          ? up
+          : Math.min(h - 26, dn);
+      }
+    }
+    if (hitsForbidden(box, obstacles, [], 4)) return;
+    parts.push(
+      `<text x="${box.x + 2}" y="${box.y + 10}" fill="${color}" fill-opacity="0.75" font-size="9" font-family="JetBrains Mono, monospace">${escapeXml(text)}</text>`
+    );
+  };
+
   if (yResist != null && yResist >= 8 && yResist <= h - 22) {
     parts.push(
-      `<line x1="${dividerX}" y1="${yResist}" x2="${guideEnd}" y2="${yResist}" stroke="#ff4d4d" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`,
-      `<text x="${dividerX + 6}" y="${yResist - 3}" fill="#ff4d4d" fill-opacity="0.7" font-size="9" font-family="JetBrains Mono, monospace">${escapeXml(t('chart.resistance', { price: formatPrice(forecastLevels.resistance, quote.value?.currency) }))}</text>`
+      `<line x1="${dividerX}" y1="${yResist}" x2="${guideEnd}" y2="${yResist}" stroke="#ff4d4d" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`
+    );
+    levelLabel(
+      t('chart.resistance', { price: formatPrice(forecastLevels.resistance, quote.value?.currency) }),
+      yResist,
+      '#ff4d4d',
+      false
     );
   }
   if (ySupport != null && ySupport >= 8 && ySupport <= h - 22) {
     parts.push(
-      `<line x1="${dividerX}" y1="${ySupport}" x2="${guideEnd}" y2="${ySupport}" stroke="#00d488" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`,
-      `<text x="${dividerX + 6}" y="${ySupport + 11}" fill="#00d488" fill-opacity="0.7" font-size="9" font-family="JetBrains Mono, monospace">${escapeXml(t('chart.support', { price: formatPrice(forecastLevels.support, quote.value?.currency) }))}</text>`
+      `<line x1="${dividerX}" y1="${ySupport}" x2="${guideEnd}" y2="${ySupport}" stroke="#00d488" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`
+    );
+    levelLabel(
+      t('chart.support', { price: formatPrice(forecastLevels.support, quote.value?.currency) }),
+      ySupport,
+      '#00d488',
+      true
     );
   }
 
@@ -889,20 +1030,31 @@ function paintForecastOverlay() {
     const isPeak = turn.inDir > 0 && turn.outDir < 0;
     const isTrough = turn.inDir < 0 && turn.outDir > 0;
     const preferAbove = isPeak || (!isTrough && (turn.outDir > 0 || turn.dir >= 0 || idx % 2 === 0));
-    let bx = Math.max(4, Math.min(x - boxW / 2, w - boxW - 4));
-    let by = preferAbove ? y - 16 - boxH : y + 16;
-    by = Math.max(4, Math.min(by, h - boxH - 20));
+    const anchorX = turn.kind === 'now'
+      ? Math.max(8, dividerX - boxW / 2 - 10)
+      : x;
 
-    const box = { x: bx, y: by, w: boxW, h: boxH };
-    for (let attempt = 0; attempt < 6; attempt++) {
-      if (!placed.some(p => boxesOverlap(p, box))) break;
-      box.y = Math.max(4, Math.min(box.y + (preferAbove ? -14 : 14), h - boxH - 20));
-    }
+    const placedAt = placeCallout({
+      anchorX,
+      anchorY: y,
+      boxW,
+      boxH,
+      preferAbove,
+      obstacles,
+      placed,
+      w,
+      h
+    });
+    if (!placedAt) return;
+
+    const box = placedAt.box;
     placed.push(box);
+    obstacles.push({ ...box });
 
+    const tipX = Math.max(box.x + 8, Math.min(x, box.x + box.w - 8));
     const tipY = (box.y + box.h <= y) ? box.y + box.h : box.y;
     parts.push(
-      `<line x1="${x}" y1="${y}" x2="${x}" y2="${tipY}" stroke="${color}" stroke-opacity="0.4" stroke-width="1" />`,
+      `<line x1="${x}" y1="${y}" x2="${tipX}" y2="${tipY}" stroke="${color}" stroke-opacity="0.4" stroke-width="1" />`,
       `<circle cx="${x}" cy="${y}" r="3" fill="${color}" />`,
       `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="rgba(13,17,23,0.92)" stroke="${color}" stroke-opacity="0.5" />`
     );
