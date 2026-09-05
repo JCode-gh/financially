@@ -90,7 +90,48 @@
         ref="forecastLayer"
         class="absolute inset-0 z-[5] pointer-events-none overflow-visible"
         aria-hidden="true"
+        @click="onNewsLayerClick"
       ></svg>
+
+      <div
+        v-if="newsDay"
+        ref="newsPanelEl"
+        class="absolute z-30 w-[min(22rem,calc(100%-1rem))] max-h-[min(22rem,72%)] card shadow-xl overflow-hidden flex flex-col"
+        :style="newsPanelStyle"
+      >
+        <div class="flex items-start justify-between gap-2 px-3 py-2 border-b border-surface-300">
+          <div class="min-w-0">
+            <p class="text-xs font-mono text-white">{{ newsDay.title }}</p>
+            <p class="text-[10px] font-mono text-gray-500">{{ $t('chart.dayNewsCount', { n: newsDay.articles.length }) }}</p>
+          </div>
+          <button
+            type="button"
+            class="text-gray-500 hover:text-white px-1"
+            :aria-label="$t('chart.closeDayNews')"
+            @click="closeNewsDay"
+          >×</button>
+        </div>
+        <div class="panel-scroll flex-1">
+          <a
+            v-for="item in newsDay.articles"
+            :key="item.id"
+            :href="item.url || undefined"
+            :target="item.url ? '_blank' : undefined"
+            :rel="item.url ? 'noopener noreferrer' : undefined"
+            class="block px-3 py-2.5 border-b border-surface-300/40 last:border-0 hover:bg-surface-200/50"
+            :class="item.url ? 'cursor-pointer' : 'cursor-default'"
+          >
+            <p class="text-[13px] text-gray-200 leading-snug">{{ item.title }}</p>
+            <div class="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-gray-600">
+              <span v-if="item.event" :class="item.tone > 0 ? 'text-bull' : item.tone < 0 ? 'text-bear' : 'text-gray-500'">
+                {{ item.event }}
+              </span>
+              <span class="truncate">{{ item.source }}</span>
+              <span class="ml-auto flex-shrink-0">{{ item.ago }}</span>
+            </div>
+          </a>
+        </div>
+      </div>
 
       <div
         v-if="showForecast && predictionLegend.length"
@@ -141,9 +182,10 @@ import { computed, nextTick, ref, watch, onMounted, onUnmounted } from 'vue';
 import { createChart, CrosshairMode, ColorType } from 'lightweight-charts';
 import { useMarketStore } from '../../stores/marketStore.js';
 import { usePredictionStore } from '../../stores/predictionStore.js';
-import { formatPrice, formatPct } from '../../utils/format.js';
+import { formatPrice, formatPct, timeAgo } from '../../utils/format.js';
 import { setupReason, shortSentence } from '../../utils/picks.js';
 import { currentLocale, t } from '../../i18n/index.js';
+import { intlLocale } from '../../i18n/locale.js';
 import { useNewsStore } from '../../stores/newsStore.js';
 import { buildForecastPath, nearLevel, sortedTargets } from '../../utils/forecastPath.js';
 import { newsApi } from '../../services/api.js';
@@ -194,7 +236,14 @@ let prevPrice = null;
 
 const chartContainer = ref(null);
 const forecastLayer = ref(null);
+const newsPanelEl = ref(null);
+const newsDay = ref(null);
+const newsPanelPos = ref({ left: 12, top: 12 });
 const predictionLegend = ref([]);
+const newsPanelStyle = computed(() => ({
+  left: `${newsPanelPos.value.left}px`,
+  top: `${newsPanelPos.value.top}px`
+}));
 const autoRetrying = ref(false);
 const retryAttempt = ref(0);
 let chart, candleSeries, volumeSeries, ro;
@@ -319,7 +368,12 @@ async function setExpanded(on) {
 }
 
 function onExpandKey(e) {
-  if (e.key === 'Escape' && expanded.value) setExpanded(false);
+  if (e.key !== 'Escape') return;
+  if (newsDay.value) {
+    closeNewsDay();
+    return;
+  }
+  if (expanded.value) setExpanded(false);
 }
 
 function isBusinessDay(time) {
@@ -625,6 +679,15 @@ function newsStrength(article) {
   return ev * 1.4 + sent;
 }
 
+function storyUrl(article) {
+  try {
+    const u = new URL(String(article?.url || article?.link || '').trim());
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
 function pickNewsMarks(candles) {
   if (!candles?.length) return [];
   const articles = newsArticlePool().filter(a => {
@@ -640,31 +703,40 @@ function pickNewsMarks(candles) {
     if (key) byDay.set(key, { candle: candles[i], prev: candles[i - 1] || null });
   }
 
-  const bestByDay = new Map();
+  const itemsByDay = new Map();
   for (const article of articles) {
     const key = resolveSession(articleSessionKey(article.publishedAt), byDay);
     const row = byDay.get(key);
     if (!row) continue;
-    const dir = candleDir(row.candle, row.prev);
     const tone = newsTone(article);
-    const score = newsStrength(article) + (tone === dir ? 0.5 : 0);
-    const cur = bestByDay.get(key);
-    if (cur && cur.score >= score) continue;
-    const event = newsEventLabel(article);
-    const title = shortSentence(article.headline || article.title || '', 46);
-    bestByDay.set(key, {
-      time: row.candle.time,
-      price: dir > 0 ? row.candle.high : row.candle.low,
-      dir,
-      score,
-      event,
-      title,
-      url: article.url || article.link || '',
-      why: event || title
+    const list = itemsByDay.get(key) || [];
+    list.push({
+      id: article.url || article.id || `${key}-${list.length}`,
+      title: article.headline || article.title || '',
+      source: article.source || '',
+      url: storyUrl(article),
+      event: newsEventLabel(article),
+      tone,
+      score: newsStrength(article),
+      ago: timeAgo(article.publishedAt)
     });
+    itemsByDay.set(key, list);
   }
 
-  return [...bestByDay.values()].sort((a, b) => candleDateKey(a.time).localeCompare(candleDateKey(b.time)));
+  return [...itemsByDay.entries()].map(([key, items]) => {
+    items.sort((a, b) => b.score - a.score);
+    const row = byDay.get(key);
+    const net = items.reduce((s, i) => s + (i.tone || 0), 0);
+    const dir = net > 0 ? 1 : net < 0 ? -1 : candleDir(row.candle, row.prev);
+    return {
+      key,
+      time: row.candle.time,
+      price: row.candle.high,
+      dir,
+      count: items.length,
+      articles: items.slice(0, 16)
+    };
+  }).sort((a, b) => a.key.localeCompare(b.key));
 }
 
 function rebuildNewsMarks(candles, isIntraday) {
@@ -711,7 +783,65 @@ function toggleForecast() {
 function toggleNews() {
   showNews.value = !showNews.value;
   persistChartFlag(CHART_NEWS_KEY, showNews.value);
+  if (!showNews.value) closeNewsDay();
   refreshOverlayChrome();
+}
+
+function closeNewsDay() {
+  newsDay.value = null;
+}
+
+function formatNewsDayTitle(time) {
+  const key = candleDateKey(time);
+  const d = new Date(`${key}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return key;
+  return d.toLocaleDateString(intlLocale(), {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+}
+
+function openNewsDay(key, clientX, clientY) {
+  const mark = newsMarks.find(m => m.key === key);
+  if (!mark) return;
+  if (newsDay.value?.key === key) {
+    closeNewsDay();
+    return;
+  }
+  const host = chartContainer.value?.getBoundingClientRect();
+  let left = 12;
+  let top = 12;
+  if (host) {
+    const panelW = Math.min(352, host.width - 16);
+    const panelH = Math.min(352, host.height * 0.72);
+    left = clientX - host.left + 10;
+    top = clientY - host.top + 10;
+    if (left + panelW > host.width - 8) left = Math.max(8, host.width - panelW - 8);
+    if (top + panelH > host.height - 8) top = Math.max(8, host.height - panelH - 8);
+  }
+  newsPanelPos.value = { left, top };
+  newsDay.value = {
+    key,
+    title: formatNewsDayTitle(mark.time),
+    articles: mark.articles
+  };
+}
+
+function onNewsLayerClick(e) {
+  const hit = e.target?.closest?.('[data-news-day]');
+  if (!hit) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openNewsDay(hit.getAttribute('data-news-day'), e.clientX, e.clientY);
+}
+
+function onDocPointerDown(e) {
+  if (!newsDay.value) return;
+  if (newsPanelEl.value?.contains(e.target)) return;
+  if (e.target?.closest?.('[data-news-day]')) return;
+  closeNewsDay();
 }
 
 function applyScaleForForecast(bars) {
@@ -727,11 +857,8 @@ function applyScaleForForecast(bars) {
   for (const p of [levels.support, levels.resistance]) {
     if (p != null) extras.push(p);
   }
-  for (const m of marks) {
-    if (m.price != null) extras.push(m.price);
-  }
-  const labeled = turns.length || marks.length;
-  if (!extras.length && !labeled) {
+  const labeled = turns.length;
+  if (!extras.length && !labeled && !marks.length) {
     candleSeries.applyOptions({ autoscaleInfoProvider: (original) => original() });
     return;
   }
@@ -746,7 +873,7 @@ function applyScaleForForecast(bars) {
         if (p > max) max = p;
       }
       const span = Math.max(max - min, 1);
-      const topPad = labeled ? 0.48 : 0.16;
+      const topPad = labeled ? 0.48 : marks.length ? 0.12 : 0.16;
       const botPad = labeled ? 0.22 : 0.08;
       return { priceRange: { minValue: min - span * botPad, maxValue: max + span * topPad } };
     }
@@ -1048,61 +1175,41 @@ function paintForecastOverlay() {
   const newsSpacing = chartBarSpacing();
   if (drawNews) newsMarks.forEach((mark) => {
     const x = ts.timeToCoordinate(mark.time);
-    const y = candleSeries.priceToCoordinate(mark.price);
-    if (x == null || y == null) return;
+    const yHigh = candleSeries.priceToCoordinate(mark.price);
+    if (x == null || yHigh == null) return;
     if (x < -10 || x > w + 10) return;
-    const color = mark.dir > 0 ? '#00d488' : '#ff4d4d';
-    const tag = mark.event || (mark.dir > 0 ? t('chart.pumpedTag') : t('chart.dumpedTag'));
-    const why = mark.title && mark.title !== mark.event ? mark.title : '';
-    const compact = newsSpacing < 11;
-    const lines = compact
-      ? [tag].filter(Boolean)
-      : [...(tag ? [tag] : []), ...wrapWhy(why, 24)].filter(Boolean);
-    const lineH = compact ? 10 : 11;
-    const padX = compact ? 4 : 6;
-    const padY = compact ? 3 : 4;
-    const boxW = Math.min(compact ? 120 : 168, Math.max(56, ...lines.map(l => l.length * 6.15 + padX * 2)));
-    const boxH = lines.length * lineH + padY * 2;
-    const pipY = mark.dir > 0 ? y - 6 : y + 6;
-    const pip = mark.dir > 0
-      ? `<polygon points="${x},${y - 1} ${x + 3.6},${y - 8} ${x - 3.6},${y - 8}" fill="${color}" />`
-      : `<polygon points="${x},${y + 1} ${x + 3.6},${y + 8} ${x - 3.6},${y + 8}" fill="${color}" />`;
-    const href = (() => {
-      try {
-        const u = new URL(String(mark.url || '').trim());
-        return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : '';
-      } catch { return ''; }
-    })();
-    const placedAt = lines.length ? placeCallout({
-      anchorX: x,
-      anchorY: pipY,
-      boxW,
-      boxH,
-      preferAbove: mark.dir > 0,
-      obstacles,
-      placed,
-      w,
-      h
-    }) : null;
-    let body = pip;
-    if (placedAt) {
-      const box = placedAt.box;
-      placed.push(box);
-      obstacles.push({ ...box });
-      const tipX = Math.max(box.x + 8, Math.min(x, box.x + box.w - 8));
-      const tipY = (box.y + box.h <= y) ? box.y + box.h : box.y;
-      body = [
-        `<line x1="${x}" y1="${pipY}" x2="${tipX}" y2="${tipY}" stroke="${color}" stroke-opacity="0.45" stroke-width="1" />`,
-        pip,
-        `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="rgba(13,17,23,0.92)" stroke="${color}" stroke-opacity="0.55" />`,
-        ...lines.map((line, i) => (
-          `<text x="${box.x + padX}" y="${box.y + padY + (i + 0.78) * lineH}" fill="${i === 0 ? color : '#c9d1d9'}" font-size="10" font-family="JetBrains Mono, monospace">${escapeXml(line)}</text>`
-        ))
-      ].join('');
+    const color = mark.dir > 0 ? '#00d488' : mark.dir < 0 ? '#ff4d4d' : '#8b949e';
+    const compact = newsSpacing < 7;
+    const selected = newsDay.value?.key === mark.key;
+    const hit = 16;
+    const cy = Math.max(9, yHigh - (compact ? 8 : 13));
+    const hx = x - hit / 2;
+    const hy = cy - hit / 2;
+    obstacles.push({ x: hx, y: hy, w: hit, h: hit });
+    const stroke = selected ? '#58a6ff' : color;
+    let glyph;
+    if (compact) {
+      glyph = `<circle cx="${x}" cy="${cy}" r="${selected ? 3.6 : 3}" fill="${color}" stroke="${stroke}" stroke-width="${selected ? 1.2 : 0}" />`;
+    } else {
+      const bx = x - 5.5;
+      const by = cy - 6;
+      const count = mark.count > 9 ? '9+' : String(mark.count);
+      glyph = [
+        `<rect x="${bx}" y="${by}" width="11" height="12" rx="2" fill="rgba(13,17,23,0.92)" stroke="${stroke}" stroke-width="${selected ? 1.4 : 1}" />`,
+        `<line x1="${bx + 2.2}" y1="${by + 3.4}" x2="${bx + 8.8}" y2="${by + 3.4}" stroke="${color}" stroke-width="1" />`,
+        `<line x1="${bx + 2.2}" y1="${by + 6}" x2="${bx + 8.8}" y2="${by + 6}" stroke="#8b949e" stroke-width="0.9" />`,
+        `<line x1="${bx + 2.2}" y1="${by + 8.6}" x2="${bx + 7.2}" y2="${by + 8.6}" stroke="#8b949e" stroke-width="0.9" />`,
+        newsSpacing >= 10 && mark.count > 1
+          ? `<text x="${bx + 11}" y="${by + 2.2}" fill="${color}" font-size="7" font-family="JetBrains Mono, monospace" text-anchor="end">${escapeXml(count)}</text>`
+          : ''
+      ].filter(Boolean).join('');
     }
-    parts.push(href
-      ? `<a href="${escapeXml(href)}" target="_blank" rel="noopener noreferrer" style="pointer-events:auto">${body}</a>`
-      : body
+    parts.push(
+      `<g class="chart-news-day" data-news-day="${escapeXml(mark.key)}" style="pointer-events:auto;cursor:pointer">`,
+      `<title>${escapeXml(t('chart.dayNewsCount', { n: mark.count }))}</title>`,
+      `<rect x="${hx}" y="${hy}" width="${hit}" height="${hit}" fill="transparent" />`,
+      glyph,
+      `</g>`
     );
   });
   if (hasForecast) forecastTurns.forEach((turn, idx) => {
@@ -1296,6 +1403,7 @@ onMounted(async () => {
   buildChart();
   renderData();
   window.addEventListener('keydown', onExpandKey);
+  document.addEventListener('pointerdown', onDocPointerDown, true);
   ro = new ResizeObserver(entries => {
     for (const e of entries) {
       const w = Math.floor(e.contentRect.width), h = Math.floor(e.contentRect.height);
@@ -1332,6 +1440,7 @@ watch(() => props.symbol, async (sym) => {
   clearAutoRetry();
   retryAttempt.value = 0;
   chartNewsArticles = [];
+  closeNewsDay();
   newsStore.fetchStockNews(sym, marketStore.selectedQuote?.name);
   loadChartNews(sym);
   await loadTimeframe(activeTimeframe());
@@ -1343,6 +1452,8 @@ onUnmounted(() => {
   clearAutoRetry();
   document.body.classList.remove('overflow-hidden');
   window.removeEventListener('keydown', onExpandKey);
+  document.removeEventListener('pointerdown', onDocPointerDown, true);
+  closeNewsDay();
   clearPredictionOverlay();
   ro?.disconnect();
   try { chart?.timeScale().unsubscribeVisibleLogicalRangeChange(paintForecastOverlay); } catch { /* ignore */ }
@@ -1386,6 +1497,10 @@ watch(
     paintForecastOverlay();
   }
 );
+
+watch(() => newsDay.value?.key, () => {
+  paintForecastOverlay();
+});
 
 // Live: nudge the last candle on each streamed trade for the charted symbol
 watch(() => marketStore.liveTick, (tick) => {
