@@ -78,9 +78,10 @@ export async function getStockNewsHistory(ticker, days = 400) {
       if (from >= to) continue;
       windows.push({ from, to });
     }
-    const chunks = await Promise.all(
-      windows.map(w => get('/company-news', { symbol: ticker, from: w.from, to: w.to }))
-    );
+    const chunks = [];
+    for (const w of windows) {
+      chunks.push(await get('/company-news', { symbol: ticker, from: w.from, to: w.to }));
+    }
     const seen = new Set();
     const out = [];
     for (const data of chunks) {

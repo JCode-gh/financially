@@ -58,10 +58,10 @@ function splitGoogleTitle(headline, fallbackSource) {
   return { headline: raw, source: fallbackSource };
 }
 
-function parseRss(xml, sourceName) {
+function parseRss(xml, sourceName, limit = 40) {
   const items = [];
   const matches = String(xml).match(/<item[\s>][\s\S]*?<\/item>/gi) || [];
-  for (const block of matches.slice(0, 40)) {
+  for (const block of matches.slice(0, limit)) {
     const rawTitle = tag(block, 'title');
     if (!rawTitle || /google (news|nieuws)/i.test(rawTitle)) continue;
     const { headline, source } = splitGoogleTitle(rawTitle, sourceName);
@@ -96,7 +96,7 @@ async function curlText(url) {
   }
 }
 
-async function fetchFeed(url, sourceName) {
+async function fetchFeed(url, sourceName, limit = 40) {
   try {
     const res = await axios.get(url, {
       timeout: 8000,
@@ -105,12 +105,12 @@ async function fetchFeed(url, sourceName) {
       validateStatus: s => s >= 200 && s < 400
     });
     if (typeof res.data === 'string' && res.data.includes('<item')) {
-      return parseRss(res.data, sourceName);
+      return parseRss(res.data, sourceName, limit);
     }
   } catch { /* Yahoo often 429s Node clients */ }
 
   const viaCurl = await curlText(url);
-  return viaCurl ? parseRss(viaCurl, sourceName) : [];
+  return viaCurl ? parseRss(viaCurl, sourceName, limit) : [];
 }
 
 async function pLimit(tasks, n) {
@@ -193,6 +193,47 @@ export async function getGoogleStockNews(ticker, name) {
       out.push({ ...item, related: sym });
     }
     return out.slice(0, 40);
+  });
+}
+
+export async function getGoogleStockNewsHistory(ticker, name, days = 400) {
+  const sym = String(ticker || '').toUpperCase();
+  const span = Math.min(Math.max(Number(days) || 400, 30), 400);
+  const terms = companySearchTerms(sym, name);
+  if (!terms.length) return [];
+  const quoted = terms.map(t => `"${t}"`).join(' OR ');
+  const extra = isInternationalTicker(sym)
+    ? ' (Euronext OR aandeel OR beurs OR Brussels OR Amsterdam OR "ENXTBR" OR Frankfurt)'
+    : '';
+  const locale = newsLocalesForSymbol(sym)[0] || { hl: 'en', gl: 'US', ceid: 'US:en' };
+
+  return cached(`gnews_hist_${sym}_${span}_${quoted}`, 20 * 60_000, async () => {
+    const now = Date.now();
+    const windows = [];
+    for (let offset = 0; offset < span; offset += 30) {
+      const to = new Date(now - offset * 86400000).toISOString().slice(0, 10);
+      const from = new Date(now - Math.min(span, offset + 30) * 86400000).toISOString().slice(0, 10);
+      if (from >= to) continue;
+      windows.push({ from, to });
+    }
+
+    const batches = await pLimit(
+      windows.map(w => () => {
+        const q = `(${quoted})${extra} after:${w.from} before:${w.to}`;
+        return fetchFeed(googleSearchUrl(q, locale), 'Google News', 80);
+      }),
+      3
+    );
+
+    const seen = new Set();
+    const out = [];
+    for (const item of batches.flat()) {
+      const key = (item.headline || '').toLowerCase().slice(0, 80);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...item, related: sym, trustedTicker: sym });
+    }
+    return out;
   });
 }
 

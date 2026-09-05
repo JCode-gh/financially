@@ -20,7 +20,7 @@ router.get('/stock/:symbol/history', asyncHandler(async (req, res) => {
   const ticker = normalizeTicker(req.params.symbol);
   if (!ticker) return ok(res, [], { count: 0 });
   const days = clampInt(req.query.days, { min: 30, max: 400, fallback: 400 });
-  const articles = await getStockChartNews(ticker, days);
+  const articles = await getStockChartNews(ticker, req.query.name, days);
   return ok(res, articles, { count: articles.length });
 }));
 

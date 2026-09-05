@@ -1,6 +1,6 @@
 import { getMarketNews as getFinnhubMarketNews, getStockNews as getFinnhubStockNews, getStockNewsHistory as getFinnhubStockNewsHistory } from '../services/finnhub.js';
 import { getTopFinancialNews, searchStockNews } from '../services/newsApi.js';
-import { getRssMarketNews, getRssStockNews, getGoogleStockNews } from '../services/rssNews.js';
+import { getRssMarketNews, getRssStockNews, getGoogleStockNews, getGoogleStockNewsHistory } from '../services/rssNews.js';
 import { analyzeArticles } from '../models/sentimentAnalyzer.js';
 import { createTtlCache } from '../lib/cache.js';
 import { dedupeArticles, filterForTicker, isPersonalNoise, rankForWatchlist } from '../lib/articles.js';
@@ -79,13 +79,21 @@ export async function getStockNewsBundle(ticker, name) {
   return bundle;
 }
 
-export async function getStockChartNews(ticker, days = 400) {
+export async function getStockChartNews(ticker, name, days = 400) {
   const span = Math.min(Math.max(Number(days) || 400, 30), 400);
-  const key = `stock_chart_news_${ticker}_${span}`;
-  return cached(key, 180_000, async () => {
-    const raw = await getFinnhubStockNewsHistory(ticker, span);
-    const articles = dedupeArticles(raw || []).filter(a => !isPersonalNoise(a));
-    const { articles: analyzed } = analyzeArticles(articles, ticker);
+  const key = `stock_chart_news_${ticker}_${name || ''}_${span}`;
+  const articles = await cached(key, 20 * 60_000, async () => {
+    const [finnhub, google] = await Promise.allSettled([
+      getFinnhubStockNewsHistory(ticker, span),
+      getGoogleStockNewsHistory(ticker, name, span)
+    ]);
+    const raw = dedupeArticles([
+      ...(finnhub.status === 'fulfilled' ? finnhub.value || [] : []),
+      ...(google.status === 'fulfilled' ? google.value || [] : [])
+    ]).filter(a => !isPersonalNoise(a));
+    const { articles: analyzed } = analyzeArticles(raw, ticker);
     return analyzed;
   });
+  if (!articles?.length) newsCache.cache.delete(key);
+  return articles || [];
 }
