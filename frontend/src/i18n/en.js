@@ -375,7 +375,27 @@ export default {
     now: 'Now',
     retrying: 'Retrying ({n})…',
     enlarge: 'Enlarge chart',
-    shrink: 'Exit full chart'
+    shrink: 'Exit full chart',
+    support: 'Support {price}',
+    resistance: 'Resistance {price}',
+    turn: {
+      up: 'Starts up — {why}',
+      down: 'Starts down — {why}',
+      flat: 'No clear move from here',
+      fadeResistance: 'Turns down at resistance {price}',
+      bounceSupport: 'Turns up at support {price}',
+      overbought: 'Pulls back — RSI {n} is stretched',
+      oversold: 'Bounces — RSI {n} is washed out',
+      reversalDown: 'Turns down — {why}',
+      reversalUp: 'Turns up — {why}',
+      resumeUp: 'Resumes higher — {why}',
+      resumeDown: 'Resumes lower — {why}',
+      targetUp: '{horizon} up — {why}',
+      targetDown: '{horizon} down — {why}',
+      target: '{horizon} target',
+      callUp: '{horizon} call is up',
+      callDown: '{horizon} call is down'
+    }
   },
   setup: {
     title: 'Setup — {symbol}',

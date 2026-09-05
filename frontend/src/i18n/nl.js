@@ -375,7 +375,27 @@ export default {
     now: 'Nu',
     retrying: 'Opnieuw ({n})…',
     enlarge: 'Grafiek vergroten',
-    shrink: 'Grafiek sluiten'
+    shrink: 'Grafiek sluiten',
+    support: 'Steun {price}',
+    resistance: 'Weerstand {price}',
+    turn: {
+      up: 'Start omhoog — {why}',
+      down: 'Start omlaag — {why}',
+      flat: 'Geen duidelijke zet vanaf hier',
+      fadeResistance: 'Draait omlaag op weerstand {price}',
+      bounceSupport: 'Draait omhoog op steun {price}',
+      overbought: 'Corrigeert — RSI {n} is oververhit',
+      oversold: 'Veert op — RSI {n} is oververkocht',
+      reversalDown: 'Draait omlaag — {why}',
+      reversalUp: 'Draait omhoog — {why}',
+      resumeUp: 'Hervat omhoog — {why}',
+      resumeDown: 'Hervat omlaag — {why}',
+      targetUp: '{horizon} omhoog — {why}',
+      targetDown: '{horizon} omlaag — {why}',
+      target: '{horizon}-doel',
+      callUp: '{horizon}-advies is omhoog',
+      callDown: '{horizon}-advies is omlaag'
+    }
   },
   setup: {
     title: 'Setup — {symbol}',

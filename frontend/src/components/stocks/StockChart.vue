@@ -119,7 +119,8 @@ import { createChart, CrosshairMode, ColorType } from 'lightweight-charts';
 import { useMarketStore } from '../../stores/marketStore.js';
 import { usePredictionStore } from '../../stores/predictionStore.js';
 import { formatPrice, formatPct } from '../../utils/format.js';
-import { t } from '../../i18n/index.js';
+import { setupReason } from '../../utils/picks.js';
+import { currentLocale, t } from '../../i18n/index.js';
 
 const props = defineProps({
   symbol: String,
@@ -156,6 +157,8 @@ let lastBar = null; // most recent candle, mutated live by streamed trades
 let retryTimer = null;
 let loadGeneration = 0;
 let forecastBars = [];
+let forecastTurns = [];
+let forecastLevels = { support: null, resistance: null };
 
 const HORIZON_DAYS = { '1d': 1, '5d': 5, '30d': 30 };
 const FORECAST_DAYS = 30;
@@ -242,6 +245,8 @@ function buildChart() {
 
 function clearPredictionOverlay() {
   forecastBars = [];
+  forecastTurns = [];
+  forecastLevels = { support: null, resistance: null };
   predictionLegend.value = [];
   try { candleSeries?.setMarkers([]); } catch { /* ignore */ }
   try {
@@ -308,16 +313,222 @@ function sortedTargets(targets) {
   return [...targets].sort((a, b) => (order[a.horizon] || 99) - (order[b.horizon] || 99));
 }
 
-function forecastAnchors(lastClose, targets) {
-  const anchors = [{ day: 0, price: lastClose }];
+function nearLevel(price, level, pct = 0.025) {
+  if (price == null || level == null || !level) return false;
+  return Math.abs(price - level) / level <= pct;
+}
+
+function reasonDir(text) {
+  const s = String(text || '');
+  if (/oversold|washed out/i.test(s)) return 1;
+  if (/overbought|stretched/i.test(s)) return -1;
+  if (/resistance|distribution|death|breakdown|bear|falling|fading|negative|headwind/i.test(s)) return -1;
+  if (/support|buyers|golden|breakout|bull|rising|positive|beat|supportive/i.test(s)) return 1;
+  if (/\bsell/i.test(s)) return -1;
+  return 0;
+}
+
+function horizonBias(text, horizon) {
+  const s = String(text || '');
+  if (horizon === '1d' && /news|stoch|rsi|macd|headline|event/i.test(s)) return 2;
+  if (horizon === '5d' && /breakout|momentum|volume|macd|trend/i.test(s)) return 2;
+  if (horizon === '30d' && /trend|sma|ema|golden|death|52-week|valuation|growth|quality|drift/i.test(s)) return 2;
+  if (/momentum|volume|news|rsi|adx/i.test(s)) return 1;
+  return 0;
+}
+
+function shortWhy(raw) {
+  const line = setupReason(raw) || String(raw || '').replace(/\s+/g, ' ').trim();
+  if (!line) return '';
+  return line.length > 56 ? `${line.slice(0, 55).trimEnd()}…` : line;
+}
+
+function pickWhyLine(pred, dir, horizon) {
+  const pool = [
+    ...(pred?.ai?.why || []),
+    ...(pred?.reasons || []),
+    ...(pred?.ai?.catalysts || []),
+    ...(pred?.newsSentiment?.topEvents || []).map(e => e?.label),
+    pred?.trend?.label
+  ].filter(Boolean);
+
+  let best = '';
+  let bestScore = -1;
+  for (const raw of pool) {
+    const line = shortWhy(raw);
+    if (!line) continue;
+    const rd = reasonDir(raw);
+    let score = 1 + horizonBias(raw, horizon);
+    if (dir && rd === dir) score += 3;
+    if (dir && rd && rd !== dir) score -= 2;
+    if (score > bestScore) {
+      bestScore = score;
+      best = line;
+    }
+  }
+  if (best) return best;
+  const h = horizon || '5d';
+  if (dir > 0) return t('chart.turn.callUp', { horizon: h });
+  if (dir < 0) return t('chart.turn.callDown', { horizon: h });
+  return '';
+}
+
+function forecastWhyText(anchor, pred, currency) {
+  const level = p => formatPrice(p, currency);
+  const dir = anchor.outDir || anchor.inDir;
+  const support = pred?.indicators?.support;
+  const resistance = pred?.indicators?.resistance;
+  const rsi = pred?.indicators?.rsi;
+
+  if (anchor.exitWhy === 'fadeResistance' && resistance != null) {
+    return t('chart.turn.fadeResistance', { price: level(resistance) });
+  }
+  if (anchor.exitWhy === 'overbought' && rsi != null) {
+    return t('chart.turn.overbought', { n: Math.round(rsi) });
+  }
+  if (anchor.exitWhy === 'bounceSupport' && support != null) {
+    return t('chart.turn.bounceSupport', { price: level(support) });
+  }
+  if (anchor.exitWhy === 'oversold' && rsi != null) {
+    return t('chart.turn.oversold', { n: Math.round(rsi) });
+  }
+  if (anchor.kind === 'fade' && resistance != null) {
+    return t('chart.turn.fadeResistance', { price: level(resistance) });
+  }
+  if (anchor.kind === 'bounce' && support != null) {
+    return t('chart.turn.bounceSupport', { price: level(support) });
+  }
+  if (anchor.kind === 'resume' && dir > 0) {
+    return t('chart.turn.resumeUp', { why: pickWhyLine(pred, 1, '30d') });
+  }
+  if (anchor.kind === 'resume' && dir < 0) {
+    return t('chart.turn.resumeDown', { why: pickWhyLine(pred, -1, '30d') });
+  }
+
+  if (anchor.kind === 'now') {
+    const why = pickWhyLine(pred, dir, '1d');
+    if (dir > 0) return t('chart.turn.up', { why });
+    if (dir < 0) return t('chart.turn.down', { why });
+    return t('chart.turn.flat');
+  }
+
+  if (anchor.inDir > 0 && anchor.outDir < 0) {
+    if (nearLevel(anchor.price, resistance, 0.03) && resistance != null) {
+      return t('chart.turn.fadeResistance', { price: level(resistance) });
+    }
+    if (rsi != null && rsi >= 70) return t('chart.turn.overbought', { n: Math.round(rsi) });
+    return t('chart.turn.reversalDown', { why: pickWhyLine(pred, -1, anchor.horizon || '5d') });
+  }
+  if (anchor.inDir < 0 && anchor.outDir > 0) {
+    if (nearLevel(anchor.price, support, 0.03) && support != null) {
+      return t('chart.turn.bounceSupport', { price: level(support) });
+    }
+    if (rsi != null && rsi <= 30) return t('chart.turn.oversold', { n: Math.round(rsi) });
+    return t('chart.turn.reversalUp', { why: pickWhyLine(pred, 1, anchor.horizon || '5d') });
+  }
+
+  const why = pickWhyLine(pred, dir, anchor.horizon || '30d');
+  if (dir > 0) return t('chart.turn.targetUp', { horizon: anchor.horizon || '30d', why });
+  if (dir < 0) return t('chart.turn.targetDown', { horizon: anchor.horizon || '30d', why });
+  return why || t('chart.turn.target', { horizon: anchor.horizon || '30d' });
+}
+
+function insertStructureAnchors(anchors, pred) {
+  if (anchors.length < 2) return anchors;
+  const support = pred?.indicators?.support;
+  const resistance = pred?.indicators?.resistance;
+  const rsi = pred?.indicators?.rsi;
+  const origin = anchors[0].price;
+  const extras = [];
+
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const a = anchors[i];
+    const b = anchors[i + 1];
+    const span = b.day - a.day;
+    if (span < 8 || a.day < 5) continue;
+
+    const goingUp = b.price > a.price + origin * 0.002;
+    const goingDown = b.price < a.price - origin * 0.002;
+    const day = Math.min(b.day - 3, a.day + Math.max(3, Math.round(span * 0.32)));
+
+    if (goingUp) {
+      const nearR = nearLevel(a.price, resistance, 0.035) && a.price >= resistance * 0.98;
+      const stretched = rsi != null && rsi >= 70 && (a.price - origin) / origin > 0.015;
+      if (!nearR && !stretched) continue;
+      let price = a.price - Math.max(a.price - origin, origin * 0.02) * 0.38;
+      let kind = 'resume';
+      if (support != null && support < a.price && support > origin * 0.97) {
+        price = support;
+        kind = 'bounce';
+      }
+      price = Math.min(price, a.price - Math.abs(a.price - origin) * 0.1);
+      a.exitWhy = nearR ? 'fadeResistance' : 'overbought';
+      extras.push({ at: i + 1, anchor: { day, price, kind, horizon: null } });
+    } else if (goingDown) {
+      const nearS = nearLevel(a.price, support, 0.035) && a.price <= support * 1.02;
+      const washed = rsi != null && rsi <= 30 && (origin - a.price) / origin > 0.015;
+      if (!nearS && !washed) continue;
+      let price = a.price + Math.max(origin - a.price, origin * 0.02) * 0.38;
+      let kind = 'resume';
+      if (resistance != null && resistance > a.price && resistance < origin * 1.03) {
+        price = resistance;
+        kind = 'fade';
+      }
+      price = Math.max(price, a.price + Math.abs(origin - a.price) * 0.1);
+      a.exitWhy = nearS ? 'bounceSupport' : 'oversold';
+      extras.push({ at: i + 1, anchor: { day, price, kind, horizon: null } });
+    }
+  }
+
+  const next = [...anchors];
+  for (let k = extras.length - 1; k >= 0; k--) {
+    next.splice(extras[k].at, 0, extras[k].anchor);
+  }
+  return next;
+}
+
+function labelForecastAnchors(anchors, pred, currency) {
+  const turns = [];
+  for (let i = 0; i < anchors.length; i++) {
+    const prev = anchors[i - 1];
+    const nxt = anchors[i + 1];
+    const a = anchors[i];
+    a.inDir = prev ? Math.sign(a.price - prev.price) : 0;
+    a.outDir = nxt ? Math.sign(nxt.price - a.price) : 0;
+    const reversal = !!(a.inDir && a.outDir && a.inDir !== a.outDir);
+    const structural = a.kind === 'bounce' || a.kind === 'fade' || a.kind === 'resume' || !!a.exitWhy;
+    a.showWhy = i === 0 || reversal || structural;
+  }
+  const marked = anchors.filter(a => a.showWhy);
+  if (marked.length < 2 && anchors.length) anchors[anchors.length - 1].showWhy = true;
+
+  for (const a of anchors) {
+    if (!a.showWhy) continue;
+    const dir = a.outDir || a.inDir;
+    turns.push({
+      day: a.day,
+      price: a.price,
+      why: forecastWhyText(a, pred, currency),
+      horizon: a.horizon || (a.kind === 'now' ? 'now' : null),
+      dir,
+      inDir: a.inDir,
+      outDir: a.outDir,
+      kind: a.kind || 'horizon'
+    });
+  }
+  return turns;
+}
+
+function forecastAnchors(lastClose, targets, pred) {
+  const anchors = [{ day: 0, price: lastClose, kind: 'now' }];
   const seen = new Set([0]);
   for (const p of sortedTargets(targets)) {
     const day = HORIZON_DAYS[p.horizon];
     if (day == null || seen.has(day) || p.targetPrice == null) continue;
     seen.add(day);
-    anchors.push({ day, price: p.targetPrice });
+    anchors.push({ day, price: p.targetPrice, kind: 'horizon', horizon: p.horizon });
   }
-  return anchors;
+  return insertStructureAnchors(anchors, pred);
 }
 
 function horizonAtDay(day) {
@@ -341,12 +552,6 @@ function seedRng(symbol, lastClose, targets) {
     t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
-}
-
-function gauss(rng) {
-  const u = Math.max(rng(), 1e-9);
-  const v = rng();
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
 function median(values) {
@@ -393,12 +598,24 @@ function historyTape(history, fallbackPrice) {
 function bridgeCloses(start, end, steps, sigma, rng) {
   if (steps <= 0) return [];
   if (steps === 1) return [end];
-  const walk = [0];
-  for (let i = 1; i <= steps; i++) walk[i] = walk[i - 1] + sigma * gauss(rng);
+  const delta = end - start;
+  const dir = Math.sign(delta);
   const out = [];
   for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    out.push(start + (end - start) * t + (walk[i] - walk[steps] * t));
+    const u = i / steps;
+    const ease = u * u * (3 - 2 * u);
+    const trend = start + delta * ease;
+    const bulge = Math.sin(Math.PI * u);
+    const noiseAmp = Math.max(Math.abs(delta) * 0.08, (sigma || 0) * 0.18) * bulge;
+    let p = trend + noiseAmp * (rng() * 2 - 1);
+    if (dir > 0) {
+      p = Math.min(Math.max(p, start + delta * u * 0.12), end + Math.abs(delta) * 0.03);
+    } else if (dir < 0) {
+      p = Math.max(Math.min(p, start + delta * u * 0.12), end - Math.abs(delta) * 0.03);
+    } else {
+      p = start + (sigma || 0) * 0.18 * (rng() * 2 - 1) * bulge;
+    }
+    out.push(p);
   }
   out[steps - 1] = end;
   return out;
@@ -438,10 +655,12 @@ function sessionCandle(prevClose, close, tape, rng) {
   };
 }
 
-function buildForecastCandles(lastCandle, targets, history) {
-  if (!lastCandle || !targets?.length) return [];
-  const anchors = forecastAnchors(lastCandle.close, targets);
-  if (anchors.length < 2) return [];
+function buildForecastCandles(lastCandle, targets, history, pred) {
+  if (!lastCandle || !targets?.length) return { bars: [], turns: [] };
+  const currency = quote.value?.currency;
+  const anchors = forecastAnchors(lastCandle.close, targets, pred);
+  if (anchors.length < 2) return { bars: [], turns: [] };
+  const turns = labelForecastAnchors(anchors, pred, currency);
   const tape = historyTape(history, lastCandle.close);
   const rng = seedRng(props.symbol, lastCandle.close, targets);
   const closes = forecastCloses(lastCandle.close, anchors, tape, rng);
@@ -455,7 +674,7 @@ function buildForecastCandles(lastCandle, targets, history) {
       day
     });
   }
-  return bars;
+  return { bars, turns };
 }
 
 function formatShortDate(dateStr) {
@@ -471,9 +690,15 @@ function predictionTargets() {
   return pred.predictions.filter(p => p.targetPrice);
 }
 
-function applyScaleForForecast(forecastBars) {
+function applyScaleForForecast(bars) {
   if (!candleSeries) return;
-  const extras = (forecastBars || []).flatMap(c => [c.high, c.low]).filter(n => n != null);
+  const extras = (bars || []).flatMap(c => [c.high, c.low]).filter(n => n != null);
+  for (const turn of forecastTurns) {
+    if (turn.price != null) extras.push(turn.price);
+  }
+  for (const p of [forecastLevels.support, forecastLevels.resistance]) {
+    if (p != null) extras.push(p);
+  }
   if (!extras.length) {
     candleSeries.applyOptions({ autoscaleInfoProvider: (original) => original() });
     return;
@@ -489,7 +714,8 @@ function applyScaleForForecast(forecastBars) {
         if (p > max) max = p;
       }
       const span = Math.max(max - min, 1);
-      return { priceRange: { minValue: min - span * 0.06, maxValue: max + span * 0.16 } };
+      const topPad = forecastTurns.length ? 0.28 : 0.16;
+      return { priceRange: { minValue: min - span * 0.08, maxValue: max + span * topPad } };
     }
   });
 }
@@ -497,7 +723,7 @@ function applyScaleForForecast(forecastBars) {
 function applyRightPad() {
   if (!chart) return;
   chart.timeScale().applyOptions({
-    rightOffset: forecastBars.length ? forecastBars.length + 2 : 4
+    rightOffset: forecastBars.length ? forecastBars.length + 4 : 4
   });
 }
 
@@ -513,6 +739,33 @@ function chartBarSpacing() {
     if (a != null && b != null) return Math.abs(b - a);
   }
   return 6;
+}
+
+function escapeXml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function wrapWhy(text, max = 24) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const next = cur ? `${cur} ${w}` : w;
+    if (next.length > max && cur) {
+      lines.push(cur);
+      cur = w;
+    } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 3);
+}
+
+function boxesOverlap(a, b, pad = 4) {
+  return !(a.x + a.w + pad < b.x || b.x + b.w + pad < a.x || a.y + a.h + pad < b.y || b.y + b.h + pad < a.y);
 }
 
 function paintForecastOverlay() {
@@ -555,6 +808,36 @@ function paintForecastOverlay() {
     `<line x1="${dividerX}" y1="8" x2="${dividerX}" y2="${h - 22}" stroke="rgba(139,148,158,0.35)" stroke-dasharray="3 3" stroke-width="1" />`
   ];
 
+  const pathPrices = [lastBar.close, ...forecastBars.flatMap(b => [b.high, b.low])].filter(n => n != null);
+  const pathMin = Math.min(...pathPrices);
+  const pathMax = Math.max(...pathPrices);
+  const pathPad = Math.max((pathMax - pathMin) * 0.2, (lastBar.close || 1) * 0.01);
+  const ySupport = forecastLevels.support != null
+    && forecastLevels.support >= pathMin - pathPad
+    && forecastLevels.support <= pathMax + pathPad
+    ? candleSeries.priceToCoordinate(forecastLevels.support)
+    : null;
+  const yResist = forecastLevels.resistance != null
+    && forecastLevels.resistance >= pathMin - pathPad
+    && forecastLevels.resistance <= pathMax + pathPad
+    ? candleSeries.priceToCoordinate(forecastLevels.resistance)
+    : null;
+  const guideEnd = Math.max(dividerX + 24, w - 10);
+  if (yResist != null && yResist >= 8 && yResist <= h - 22) {
+    parts.push(
+      `<line x1="${dividerX}" y1="${yResist}" x2="${guideEnd}" y2="${yResist}" stroke="#ff4d4d" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`,
+      `<text x="${dividerX + 6}" y="${yResist - 3}" fill="#ff4d4d" fill-opacity="0.7" font-size="9" font-family="JetBrains Mono, monospace">${escapeXml(t('chart.resistance', { price: formatPrice(forecastLevels.resistance, quote.value?.currency) }))}</text>`
+    );
+  }
+  if (ySupport != null && ySupport >= 8 && ySupport <= h - 22) {
+    parts.push(
+      `<line x1="${dividerX}" y1="${ySupport}" x2="${guideEnd}" y2="${ySupport}" stroke="#00d488" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`,
+      `<text x="${dividerX + 6}" y="${ySupport + 11}" fill="#00d488" fill-opacity="0.7" font-size="9" font-family="JetBrains Mono, monospace">${escapeXml(t('chart.support', { price: formatPrice(forecastLevels.support, quote.value?.currency) }))}</text>`
+    );
+  }
+
+  const turnDays = new Set(forecastTurns.filter(tr => tr.day > 0).map(tr => tr.day));
+
   forecastBars.forEach((bar, i) => {
     const x = ts.logicalToCoordinate(lastLogical + 1 + i);
     if (x == null) return;
@@ -577,11 +860,58 @@ function paintForecastOverlay() {
       `<line x1="${x}" y1="${yHigh}" x2="${x}" y2="${yLow}" stroke="${color}" stroke-width="${strokeW}" stroke-opacity="0.55" />`,
       `<rect x="${x - candleW / 2}" y="${top}" width="${candleW}" height="${bodyH}" fill="${fill}" stroke="${color}" stroke-width="${strokeW}" />`
     );
-    if (fontPx && style) {
+    if (fontPx && style && !turnDays.has(bar.day)) {
       parts.push(
         `<text x="${x}" y="${labelY}" fill="${style.color}" font-size="${fontPx}" font-family="JetBrains Mono, monospace" text-anchor="middle">${style.label}</text>`
       );
     }
+  });
+
+  const placed = [];
+  forecastTurns.forEach((turn, idx) => {
+    if (!turn.why) return;
+    const x = turn.day <= 0
+      ? lastX
+      : ts.logicalToCoordinate(lastLogical + turn.day);
+    const y = candleSeries.priceToCoordinate(turn.price);
+    if (x == null || y == null) return;
+
+    const color = turn.dir > 0 ? '#00d488' : turn.dir < 0 ? '#ff4d4d' : '#8b949e';
+    const tag = turn.horizon && turn.horizon !== 'now'
+      ? (HORIZON_STYLE[turn.horizon]?.label || turn.horizon)
+      : (turn.kind === 'now' ? t('chart.now') : '');
+    const lines = [...(tag ? [tag] : []), ...wrapWhy(turn.why, 26)];
+    const lineH = 11;
+    const padX = 6;
+    const padY = 4;
+    const boxW = Math.min(168, Math.max(72, ...lines.map(l => l.length * 6.15 + padX * 2)));
+    const boxH = lines.length * lineH + padY * 2;
+    const isPeak = turn.inDir > 0 && turn.outDir < 0;
+    const isTrough = turn.inDir < 0 && turn.outDir > 0;
+    const preferAbove = isPeak || (!isTrough && (turn.outDir > 0 || turn.dir >= 0 || idx % 2 === 0));
+    let bx = Math.max(4, Math.min(x - boxW / 2, w - boxW - 4));
+    let by = preferAbove ? y - 16 - boxH : y + 16;
+    by = Math.max(4, Math.min(by, h - boxH - 20));
+
+    const box = { x: bx, y: by, w: boxW, h: boxH };
+    for (let attempt = 0; attempt < 6; attempt++) {
+      if (!placed.some(p => boxesOverlap(p, box))) break;
+      box.y = Math.max(4, Math.min(box.y + (preferAbove ? -14 : 14), h - boxH - 20));
+    }
+    placed.push(box);
+
+    const tipY = (box.y + box.h <= y) ? box.y + box.h : box.y;
+    parts.push(
+      `<line x1="${x}" y1="${y}" x2="${x}" y2="${tipY}" stroke="${color}" stroke-opacity="0.4" stroke-width="1" />`,
+      `<circle cx="${x}" cy="${y}" r="3" fill="${color}" />`,
+      `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="rgba(13,17,23,0.92)" stroke="${color}" stroke-opacity="0.5" />`
+    );
+    lines.forEach((line, i) => {
+      const fill = i === 0 && tag ? color : '#c9d1d9';
+      parts.push(
+        `<text x="${box.x + padX}" y="${box.y + padY + (i + 0.78) * lineH}" fill="${fill}" font-size="10" font-family="JetBrains Mono, monospace">${escapeXml(line)}</text>`
+      );
+    });
   });
 
   svg.innerHTML = parts.join('');
@@ -600,10 +930,16 @@ function applyPredictionOverlay(candles) {
   const last = candles[candles.length - 1];
   const currency = quote.value?.currency;
   const sorted = sortedTargets(targets);
-  const bars = buildForecastCandles(last, sorted, candles);
+  const pred = predictionStore.currentPrediction;
+  const { bars, turns } = buildForecastCandles(last, sorted, candles, pred);
   if (!bars.length) return;
 
   forecastBars = bars;
+  forecastTurns = turns;
+  forecastLevels = {
+    support: pred?.indicators?.support ?? null,
+    resistance: pred?.indicators?.resistance ?? null
+  };
   applyScaleForForecast(bars);
   applyRightPad();
 
@@ -764,6 +1100,16 @@ watch(
     paintForecastOverlay();
   },
   { deep: true, immediate: true }
+);
+
+watch(
+  () => currentLocale(),
+  () => {
+    if (!chart || !candleSeries) return;
+    applyPredictionOverlay(mappedCandles().candles);
+    applyRightPad();
+    paintForecastOverlay();
+  }
 );
 
 // Live: nudge the last candle on each streamed trade for the charted symbol
