@@ -25,6 +25,14 @@ export function formatNumber(value, digits = 2) {
   }).format(Number(value));
 }
 
+export function formatCompact(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  return new Intl.NumberFormat(intlLocale(), {
+    notation: 'compact',
+    maximumFractionDigits: 1
+  }).format(Number(value));
+}
+
 export function formatPct(pct, digits = 2) {
   if (pct == null || Number.isNaN(Number(pct))) return '—';
   const n = Number(pct);

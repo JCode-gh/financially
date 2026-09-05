@@ -68,48 +68,6 @@
     </div>
   </div>
 
-  <div v-else-if="verdict" class="px-4 sm:px-5 py-3 sm:py-4 border-b border-surface-300 flex-shrink-0">
-    <div class="flex items-start gap-3 sm:gap-4">
-      <div
-        class="verdict-stamp flex-shrink-0 h-14 min-w-14 sm:h-20 sm:min-w-20 px-2"
-        :class="verdict.bg"
-      >
-        <span class="verdict-stamp-label text-xs sm:text-lg">{{ verdict.label }}</span>
-      </div>
-      <div class="flex-1 min-w-0">
-        <p class="text-base sm:text-lg text-white leading-snug">{{ verdict.headline }}</p>
-        <p v-if="verdict.doNow" class="text-sm font-mono text-accent mt-2">{{ $t('verdict.doNow', { text: verdict.doNow }) }}</p>
-        <p v-if="verdict.detail" class="text-xs text-gray-400 mt-1">{{ verdict.detail }}</p>
-        <ul v-if="verdict.why.length" class="mt-3 space-y-1">
-          <li v-for="(w, i) in verdict.why" :key="i" class="text-sm text-gray-300" :class="ui.isPro ? 'font-mono' : 'leading-relaxed'">· {{ w }}</li>
-        </ul>
-        <p v-if="verdict.risks.length" class="mt-2 text-xs font-mono text-neutral">
-          {{ $t('verdict.risk', { text: verdict.risks.join(' · ') }) }}
-        </p>
-        <div class="mt-3">
-          <button
-            type="button"
-            class="text-[11px] font-mono text-accent hover:text-accent/70"
-            @click="steerOpen = !steerOpen"
-          >
-            {{ steerOpen ? $t('brief.hideSteer') : $t('brief.steer') }}
-          </button>
-          <div v-if="steerOpen" class="mt-2">
-            <VerdictSteer :symbol="symbol" :loading="loading" @applied="onSteered" />
-          </div>
-        </div>
-        <VerdictBriefing class="mt-3" :briefing="verdict.briefing" :overlooked="verdict.overlooked" />
-        <div v-if="ui.isPro && horizons.length" class="flex flex-wrap gap-4 mt-4 text-sm font-mono">
-          <div v-for="h in horizons" :key="h.horizon" class="flex items-center gap-1.5">
-            <span class="text-gray-500">{{ h.label }}:</span>
-            <span :class="h.color">{{ h.price }}</span>
-            <span :class="h.color">({{ h.move }})</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <div v-else-if="loading" class="analyzing-card px-4 py-4 border-b border-surface-300">
     <div class="flex items-center gap-3.5">
       <div class="analyzing-orb" aria-hidden="true">
@@ -146,8 +104,7 @@ import { computed, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { usePredictionStore } from '../../stores/predictionStore.js';
 import { useUiStore } from '../../stores/uiStore.js';
-import { formatPrice } from '../../utils/format.js';
-import { simpleReasons } from '../../utils/picks.js';
+import { useDeskVerdict } from '../../composables/useDeskVerdict.js';
 import SourceList from '../news/SourceList.vue';
 import VerdictSteer from './VerdictSteer.vue';
 import VerdictBriefing from './VerdictBriefing.vue';
@@ -166,6 +123,7 @@ const props = defineProps({
 const predictionStore = usePredictionStore();
 const ui = useUiStore();
 const { t } = useI18n();
+const { verdict, horizons } = useDeskVerdict(() => props.symbol);
 
 const analyzingSteps = computed(() => [
   t('verdict.analyzingTape'),
@@ -197,101 +155,12 @@ watch(() => props.loading, (on) => {
 
 onUnmounted(stopAnalyzeCycle);
 
-const prediction = computed(() => {
-  const key = props.symbol?.toUpperCase();
-  const current = predictionStore.currentPrediction;
-  if (current?.ticker === key) return current;
-  return predictionStore.byTicker?.[key] || null;
-});
-
-function confidenceLabel(n) {
-  if (n >= 70) return t('confidence.high');
-  if (n >= 50) return t('confidence.medium');
-  return t('confidence.low');
-}
-
-function toAction(p) {
-  if (p === 'UP' || p === 'BUY' || p === 'LONG') return 'buy';
-  if (p === 'DOWN' || p === 'SELL' || p === 'SHORT') return 'sell';
-  return 'hold';
-}
-
-const verdict = computed(() => {
-  const pred = prediction.value;
-  if (!pred?.predictions?.length) return null;
-
-  const ai = pred.ai;
-  const fiveDay = pred.predictions.find(p => p.horizon === '5d') || pred.predictions[1];
-  const action = ai?.action
-    ? toAction(ai.action)
-    : pred.tradePlan?.direction === 'LONG' ? 'buy'
-      : pred.tradePlan?.direction === 'SHORT' ? 'sell'
-      : toAction(fiveDay?.prediction);
-
-  const styles = {
-    buy: { label: t('action.buy'), bg: 'bg-bull/15 text-bull border border-bull/30' },
-    sell: { label: t('action.sell'), bg: 'bg-bear/15 text-bear border border-bear/30' },
-    hold: { label: t('action.hold'), bg: 'bg-neutral/10 text-neutral border border-neutral/30' }
-  };
-  const s = styles[action];
-
-  const fallback = {
-    buy: t('verdict.fallbackBuy', { symbol: props.symbol }),
-    sell: t('verdict.fallbackSell', { symbol: props.symbol }),
-    hold: t('verdict.fallbackHold', { symbol: props.symbol })
-  };
-
-  const newsN = pred.newsUsed ?? pred.newsSentiment?.articleCount;
-  const headline = ai?.thesis || fallback[action];
-  const rawWhy = ui.isSimple
-    ? (ai?.why?.length ? ai.why : simpleReasons(pred.reasons || []))
-    : (ai?.why || pred.reasons?.slice(0, 5) || []);
-  const why = ui.isSimple
-    ? rawWhy.filter(w => !/\b(macd|adx|rsi|sma|ema|stochastic|bollinger)\b/i.test(w))
-    : rawWhy;
-  const risks = ai?.risks || [];
-
-  return {
-    label: s.label,
-    bg: s.bg,
-    headline,
-    doNow: ai?.doNow || '',
-    detail: ui.isSimple
-      ? (ai ? t('confidence.label', { level: confidenceLabel(ai.conviction) }) : null)
-      : (ai
-        ? `${t('verdict.llamaMeta', { pct: ai.conviction })}${ai.disagreement === 'news_vs_tech' ? ` · ${t('verdict.newsVsTape')}` : ''}${newsN != null ? ` · ${t('verdict.headlines', { n: newsN })}` : ''}`
-        : (pred.aiError ? t('verdict.llamaOffline', { reason: pred.reasons?.[0] || t('verdict.quantOnly') }) : pred.reasons?.[0] || null)),
-    why,
-    risks,
-    sources: (pred.sources || []).filter(s => s?.title && s?.url),
-    digest: String(pred.sourcesDigest || '').trim(),
-    briefing: pred.briefing || null,
-    overlooked: pred.overlooked || pred.ai?.overlooked || [],
-    teaser: (pred.briefing?.considered || []).slice(0, 4).map(c => c.value).filter(Boolean).join(' · '),
-    canExpand: !!(headline || why.length || risks.length || pred.sourcesDigest || pred.briefing || pred.overlooked?.length)
-  };
-});
-
 watch(() => props.symbol, () => { open.value = false; steerOpen.value = false; });
 
 function onSteered() {
   open.value = true;
   steerOpen.value = false;
 }
-
-const horizons = computed(() => {
-  const preds = prediction.value?.predictions;
-  if (!preds?.length) return [];
-  const labels = { '1d': '1d', '5d': '5d', '30d': '30d' };
-  return preds.map(p => ({
-    horizon: p.horizon,
-    label: labels[p.horizon] || p.horizon,
-    price: formatPrice(p.targetPrice),
-    move: `${(p.expectedMovePct ?? 0) >= 0 ? '+' : ''}${(p.expectedMovePct ?? 0).toFixed(1)}%`,
-    color: p.prediction === 'UP' ? 'text-bull' : p.prediction === 'DOWN' ? 'text-bear' : 'text-neutral'
-  }));
-});
-
 </script>
 
 <style scoped>

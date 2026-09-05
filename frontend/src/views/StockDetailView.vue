@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col h-full min-h-0 overflow-hidden bg-surface">
-    <div class="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2 border-b border-surface-300 flex-shrink-0">
+    <div class="flex flex-wrap items-center gap-2 px-3 sm:px-4 py-2.5 border-b border-surface-300 flex-shrink-0">
       <button
         type="button"
         @click="goBack"
@@ -12,12 +12,16 @@
         </svg>
       </button>
       <div class="flex-1 min-w-0">
-        <span class="font-mono text-base sm:text-lg font-bold text-white">{{ symbol }}</span>
-        <span v-if="quote?.name" class="text-sm text-gray-500 ml-2 hidden sm:inline">{{ quote.name }}</span>
-        <span v-if="quote?.price != null" class="ml-2 sm:ml-3 font-mono text-sm text-gray-300">{{ formatPrice(quote.price, quote.currency) }}</span>
-        <span v-if="quote?.changePct != null" class="ml-1.5 font-mono text-sm" :class="quote.changePct >= 0 ? 'text-bull' : 'text-bear'">
-          {{ formatPct(quote.changePct) }}
-        </span>
+        <div class="flex items-baseline gap-2 min-w-0">
+          <span class="font-mono text-base sm:text-lg font-bold text-white">{{ symbol }}</span>
+          <span v-if="quote?.name" class="text-sm text-gray-500 truncate">{{ quote.name }}</span>
+        </div>
+        <div v-if="quote?.price != null" class="mt-0.5 flex items-baseline gap-2">
+          <span class="font-mono text-sm text-gray-300">{{ formatPrice(quote.price, quote.currency) }}</span>
+          <span v-if="quote.changePct != null" class="font-mono text-sm" :class="quote.changePct >= 0 ? 'text-bull' : 'text-bear'">
+            {{ formatPct(quote.changePct) }}
+          </span>
+        </div>
       </div>
       <button
         v-if="!onList"
@@ -51,16 +55,9 @@
       </button>
     </div>
 
-    <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain panel-scroll pb-4">
+    <div class="flex-1 min-h-0 overflow-y-auto overscroll-y-contain panel-scroll pb-8">
       <StockVerdict :symbol="symbol" :loading="generating" />
-
-      <div class="min-h-[280px] h-[46vh] sm:h-[50vh] lg:min-h-[320px] lg:h-[min(480px,52vh)] flex-shrink-0 overflow-hidden w-full">
-        <StockChart :symbol="symbol" hide-quote flush />
-      </div>
-
-      <div v-if="digest || sources.length" class="flex-shrink-0 px-4 sm:px-5 py-3 border-t border-surface-300 w-full">
-        <SourceList :items="sources" :digest="digest" :heading="$t('verdict.sources')" />
-      </div>
+      <StockDetailBody :symbol="symbol" :quote="quote" :loading="generating" />
     </div>
 
     <TradeSetupModal
@@ -78,10 +75,9 @@ import { useMarketStore } from '../stores/marketStore.js';
 import { usePredictionStore } from '../stores/predictionStore.js';
 import { useUiStore } from '../stores/uiStore.js';
 import { formatPrice, formatPct } from '../utils/format.js';
-import StockChart from '../components/stocks/StockChart.vue';
 import StockVerdict from '../components/predictions/StockVerdict.vue';
+import StockDetailBody from '../components/stocks/StockDetailBody.vue';
 import TradeSetupModal from '../components/predictions/TradeSetupModal.vue';
-import SourceList from '../components/news/SourceList.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -96,16 +92,6 @@ const quote = computed(() =>
 const generating = computed(() => predictionStore.generating);
 const onList = computed(() => marketStore.isOnWatchlist(symbol.value));
 const showTradeSetup = ref(false);
-
-function desk() {
-  const key = symbol.value;
-  return predictionStore.currentPrediction?.ticker === key
-    ? predictionStore.currentPrediction
-    : predictionStore.byTicker?.[key];
-}
-
-const sources = computed(() => (desk()?.sources || []).filter(s => s?.title && s?.url));
-const digest = computed(() => String(desk()?.sourcesDigest || '').trim());
 
 function goBack() {
   if (window.history.length > 1) router.back();
