@@ -179,7 +179,7 @@
       <div class="px-4 sm:px-6 lg:px-8 pt-6 pb-2">
         <p class="detail-kicker !mb-0">{{ $t('detail.chart') }}</p>
       </div>
-      <div class="h-[300px] sm:h-[360px] lg:h-[400px] overflow-hidden">
+      <div class="h-[600px] sm:h-[720px] lg:h-[800px] overflow-hidden">
         <StockChart :symbol="symbol" hide-quote flush />
       </div>
     </section>

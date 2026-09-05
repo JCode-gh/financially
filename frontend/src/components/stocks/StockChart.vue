@@ -206,8 +206,10 @@ const chartError = computed(() => {
 });
 
 function buildChart() {
-  const rect = chartContainer.value.getBoundingClientRect();
-  chart = createChart(chartContainer.value, {
+  const el = chartContainer.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  chart = createChart(el, {
     width: Math.floor(rect.width) || 600,
     height: Math.floor(rect.height) || 320,
     layout: {
@@ -711,8 +713,11 @@ async function retryLoad() {
   await loadTimeframe(activeTimeframe());
 }
 
-onMounted(() => {
+onMounted(async () => {
+  await nextTick();
+  if (!chartContainer.value) return;
   buildChart();
+  renderData();
   window.addEventListener('keydown', onExpandKey);
   ro = new ResizeObserver(entries => {
     for (const e of entries) {
@@ -732,6 +737,7 @@ watch(() => props.symbol, async (sym) => {
   clearAutoRetry();
   retryAttempt.value = 0;
   await loadTimeframe(activeTimeframe());
+  if (chart && candleSeries) renderData();
 }, { immediate: true });
 
 onUnmounted(() => {
