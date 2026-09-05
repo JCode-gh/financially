@@ -288,6 +288,15 @@ function collectStructure(origin, anchors, pred, tape, targets) {
     });
   }
 
+  const digest = extras.find(e => e.kind === 'resume' || e.kind === 'pullback');
+  if (t30 && digest && t30.day - digest.day >= 12 && Math.abs(t30.price - digest.price) > atr * 2.4) {
+    extras.push({
+      day: clamp(digest.day + Math.round((t30.day - digest.day) * 0.55), digest.day + 5, t30.day - 4),
+      price: blend(digest.price, t30.price, 0.62) * (1 - (netDir || 1) * 0.01),
+      kind: 'pullback'
+    });
+  }
+
   return extras;
 }
 
@@ -304,7 +313,8 @@ export function forecastAnchors(lastClose, targets, pred, tape) {
 
   for (const ex of collectStructure(lastClose, anchors, pred, tape, targets)) {
     if (ex.day <= 0 || ex.day >= FORECAST_DAYS) continue;
-    if (anchors.some(a => Math.abs(a.day - ex.day) < 3)) continue;
+    if (anchors.some(a => a.day === ex.day)) continue;
+    if (anchors.some(a => a.kind !== 'horizon' && a.kind !== 'now' && Math.abs(a.day - ex.day) < 3)) continue;
     anchors.push(ex);
   }
   anchors.sort((a, b) => a.day - b.day || (a.kind === 'horizon' ? 1 : 0) - (b.kind === 'horizon' ? 1 : 0));

@@ -43,9 +43,32 @@
         >
           {{ tf.label }}
         </button>
+        <span class="w-px h-3 bg-surface-300 mx-1 flex-shrink-0" aria-hidden="true"></span>
         <button
           type="button"
-          class="ml-1 p-1 rounded text-gray-500 hover:text-accent hover:bg-accent/10 transition-colors"
+          class="text-xs px-1.5 py-1 rounded font-mono transition-colors flex-shrink-0"
+          :class="showForecast ? 'bg-accent/20 text-accent' : 'text-gray-500 hover:text-gray-300'"
+          :aria-pressed="showForecast"
+          :aria-label="showForecast ? $t('chart.hideForecast') : $t('chart.showForecast')"
+          :title="showForecast ? $t('chart.hideForecast') : $t('chart.showForecast')"
+          @click="toggleForecast"
+        >
+          {{ $t('chart.forecast') }}
+        </button>
+        <button
+          type="button"
+          class="text-xs px-1.5 py-1 rounded font-mono transition-colors flex-shrink-0"
+          :class="showNews ? 'bg-accent/20 text-accent' : 'text-gray-500 hover:text-gray-300'"
+          :aria-pressed="showNews"
+          :aria-label="showNews ? $t('chart.hideNewsMarks') : $t('chart.showNewsMarks')"
+          :title="showNews ? $t('chart.hideNewsMarks') : $t('chart.showNewsMarks')"
+          @click="toggleNews"
+        >
+          {{ $t('chart.news') }}
+        </button>
+        <button
+          type="button"
+          class="ml-0.5 p-1 rounded text-gray-500 hover:text-accent hover:bg-accent/10 transition-colors"
           :aria-label="expanded ? $t('chart.shrink') : $t('chart.enlarge')"
           :title="expanded ? $t('chart.shrink') : $t('chart.enlarge')"
           @click="setExpanded(!expanded)"
@@ -70,7 +93,7 @@
       ></svg>
 
       <div
-        v-if="predictionLegend.length"
+        v-if="showForecast && predictionLegend.length"
         class="absolute top-2 left-2 z-10 font-mono text-[11px] pointer-events-none flex flex-col gap-0.5 bg-surface-100/85 px-2 py-1.5 border border-surface-300/50"
       >
         <div class="text-[10px] text-gray-600 uppercase tracking-wide mb-0.5">{{ $t('chart.forecast') }}</div>
@@ -101,7 +124,7 @@
       </div>
     </div>
 
-    <div v-if="predictionLegend.length" class="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 border-t border-surface-300/50 flex-shrink-0 text-xs font-mono">
+    <div v-if="showForecast && predictionLegend.length" class="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 border-t border-surface-300/50 flex-shrink-0 text-xs font-mono">
       <div class="text-gray-600 uppercase tracking-wide self-center">{{ $t('chart.forecast') }}</div>
       <div v-for="item in predictionLegend" :key="item.horizon" class="flex items-center gap-1.5">
         <span class="forecast-swatch" :style="{ color: item.color }"></span>
@@ -146,8 +169,26 @@ const timeframes = [
   { label: '6M', interval: '1day', count: 126 },
   { label: '1Y', interval: '1day', count: 252 }
 ];
+const CHART_FORECAST_KEY = 'financially.chart.forecast';
+const CHART_NEWS_KEY = 'financially.chart.news';
+
+function readChartFlag(key, fallback = true) {
+  try {
+    const v = localStorage.getItem(key);
+    if (v === '0') return false;
+    if (v === '1') return true;
+  } catch { /* ignore */ }
+  return fallback;
+}
+
+function persistChartFlag(key, on) {
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch { /* ignore */ }
+}
+
 const activeTf = ref('1Y');
 const expanded = ref(false);
+const showForecast = ref(readChartFlag(CHART_FORECAST_KEY, true));
+const showNews = ref(readChartFlag(CHART_NEWS_KEY, true));
 const priceFlash = ref('');
 let prevPrice = null;
 
@@ -630,19 +671,66 @@ function rebuildNewsMarks(candles, isIntraday) {
   newsMarks = isIntraday ? [] : pickNewsMarks(candles);
 }
 
+function overlayForecastOn() {
+  return !!showForecast.value;
+}
+
+function overlayNewsOn() {
+  return !!showNews.value;
+}
+
+function markNowBar() {
+  if (!candleSeries || !lastBar || !overlayForecastOn() || !forecastBars.length) {
+    try { candleSeries?.setMarkers([]); } catch { /* ignore */ }
+    return;
+  }
+  try {
+    candleSeries.setMarkers([{
+      time: lastBar.time,
+      position: 'aboveBar',
+      color: '#8b949e',
+      shape: 'circle',
+      text: t('chart.now')
+    }]);
+  } catch { /* ignore */ }
+}
+
+function refreshOverlayChrome() {
+  applyScaleForForecast(overlayForecastOn() ? forecastBars : []);
+  applyRightPad();
+  markNowBar();
+  paintForecastOverlay();
+}
+
+function toggleForecast() {
+  showForecast.value = !showForecast.value;
+  persistChartFlag(CHART_FORECAST_KEY, showForecast.value);
+  refreshOverlayChrome();
+}
+
+function toggleNews() {
+  showNews.value = !showNews.value;
+  persistChartFlag(CHART_NEWS_KEY, showNews.value);
+  refreshOverlayChrome();
+}
+
 function applyScaleForForecast(bars) {
   if (!candleSeries) return;
-  const extras = (bars || []).flatMap(c => [c.high, c.low]).filter(n => n != null);
-  for (const turn of forecastTurns) {
+  const useBars = overlayForecastOn() ? (bars || forecastBars) : [];
+  const turns = overlayForecastOn() ? forecastTurns : [];
+  const levels = overlayForecastOn() ? forecastLevels : { support: null, resistance: null };
+  const marks = overlayNewsOn() ? newsMarks : [];
+  const extras = useBars.flatMap(c => [c.high, c.low]).filter(n => n != null);
+  for (const turn of turns) {
     if (turn.price != null) extras.push(turn.price);
   }
-  for (const p of [forecastLevels.support, forecastLevels.resistance]) {
+  for (const p of [levels.support, levels.resistance]) {
     if (p != null) extras.push(p);
   }
-  for (const m of newsMarks) {
+  for (const m of marks) {
     if (m.price != null) extras.push(m.price);
   }
-  const labeled = forecastTurns.length || newsMarks.length;
+  const labeled = turns.length || marks.length;
   if (!extras.length && !labeled) {
     candleSeries.applyOptions({ autoscaleInfoProvider: (original) => original() });
     return;
@@ -667,8 +755,9 @@ function applyScaleForForecast(bars) {
 
 function applyRightPad() {
   if (!chart) return;
+  const n = overlayForecastOn() ? forecastBars.length : 0;
   chart.timeScale().applyOptions({
-    rightOffset: forecastBars.length ? forecastBars.length + 8 : 4
+    rightOffset: n ? n + 8 : 4
   });
 }
 
@@ -816,7 +905,9 @@ function paintForecastOverlay() {
     svg.innerHTML = '';
     return;
   }
-  if (!forecastBars.length && !newsMarks.length) {
+  const drawForecast = overlayForecastOn() && forecastBars.length;
+  const drawNews = overlayNewsOn() && newsMarks.length;
+  if (!drawForecast && !drawNews) {
     svg.innerHTML = '';
     return;
   }
@@ -830,7 +921,7 @@ function paintForecastOverlay() {
   const strokeW = spacing >= 8 ? 1.25 : spacing >= 4 ? 1 : 0.7;
   const fontPx = spacing >= 10 ? 10 : spacing >= 6 ? 9 : 0;
   const labelGap = Math.max(3, spacing * 0.4);
-  const hasForecast = !!(forecastBars.length && lastBar && lastX != null && lastLogical != null);
+  const hasForecast = !!(drawForecast && lastBar && lastX != null && lastLogical != null);
   const dividerX = hasForecast ? lastX + spacing * 0.5 : null;
   const parts = [];
 
@@ -955,7 +1046,7 @@ function paintForecastOverlay() {
 
   const placed = [];
   const newsSpacing = chartBarSpacing();
-  newsMarks.forEach((mark) => {
+  if (drawNews) newsMarks.forEach((mark) => {
     const x = ts.timeToCoordinate(mark.time);
     const y = candleSeries.priceToCoordinate(mark.price);
     if (x == null || y == null) return;
@@ -1113,16 +1204,7 @@ function applyPredictionOverlay(candles) {
     });
   }
 
-  try {
-    candleSeries.setMarkers([{
-      time: last.time,
-      position: 'aboveBar',
-      color: '#8b949e',
-      shape: 'circle',
-      text: t('chart.now')
-    }]);
-  } catch { /* ignore */ }
-
+  markNowBar();
   paintForecastOverlay();
 }
 
