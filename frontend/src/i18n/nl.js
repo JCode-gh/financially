@@ -358,7 +358,16 @@ export default {
     sma200: 'SMA 200',
     stoch: 'Stoch',
     mfi: 'MFI',
-    range: 'Bereik'
+    range: 'Bereik',
+    insider: 'Insidertransacties',
+    filings: 'Deponeringen',
+    options: 'Opties',
+    insiderBuy: 'Koop',
+    insiderSell: 'Verkoop',
+    putCall: 'Put/call-volume',
+    putCallOi: 'Put/call open interest',
+    impliedVol: 'Implied vol',
+    expiry: 'Expiratie'
   },
   chart: {
     by: 'tot {date}',

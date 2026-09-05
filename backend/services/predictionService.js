@@ -3,7 +3,8 @@ import { getHistoricalSeries } from './historyProvider.js';
 import { getQuote } from '../providers/marketData.js';
 import { getStockArticles } from '../providers/news.js';
 import { decideTrade, summarizeArticles } from './ollama.js';
-import { loadWorldContext, formatWorldBlock } from './worldContext.js';
+import { attachQuoteFallbacks, formatWorldBlock, loadWorldContext } from './worldContext.js';
+import { mergeFundamentalSignals, signalsFromFinancials } from '../models/fundamentalsSignals.js';
 import { buildBriefing, briefCacheTag, clipNotes, normalizeStyle } from './briefing.js';
 import { checkUserClaims, worstClaimStatus, honestClaimReply, replyTreatsClaimAsFact } from '../lib/factCheck.js';
 import { enrichArticles, fallbackSnippet, isPriceMovingArticle, isUsefulText, pickSourceArticles } from '../lib/articleBody.js';
@@ -50,6 +51,29 @@ function fiveDayFrom(result) {
   return result.predictions?.find(p => p.horizon === '5d') || result.predictions?.[1] || {};
 }
 
+function applyDeskFundamentals(result, world) {
+  if (!result || !world) return result;
+  const fund = signalsFromFinancials(world.financials);
+  result.signals = mergeFundamentalSignals(result.signals || {}, fund);
+  const extra = [];
+  if (fund.valuation <= -0.4) extra.push('Valuation looks stretched');
+  else if (fund.valuation >= 0.4) extra.push('Valuation looks supportive');
+  if (fund.growth <= -0.4) extra.push('Growth looks weak');
+  else if (fund.growth >= 0.6) extra.push('Growth looks supportive');
+  if (fund.quality <= -0.4) extra.push('Quality looks weaker');
+  else if (fund.quality >= 0.4) extra.push('The balance sheet looks solid');
+  const net = world.insider?.netShares || 0;
+  if (net > 1000) extra.push('Insider buying recently');
+  else if (net < -1000) extra.push('Insider selling recently');
+  const pc = world.options?.putCallVolume;
+  if (pc != null && pc > 1.3) extra.push('Options skew to puts');
+  else if (pc != null && pc < 0.6) extra.push('Options skew to calls');
+  if (extra.length) {
+    result.reasons = [...extra, ...(result.reasons || [])].slice(0, 8);
+  }
+  return result;
+}
+
 function grounded(items, corpus) {
   const text = String(corpus || '').toLowerCase();
   return (items || []).filter(item => {
@@ -64,7 +88,12 @@ function worldCorpus(world) {
     world?.profile?.name,
     world?.profile?.countryName,
     world?.profile?.industry,
-    world?.regime?.label
+    world?.profile?.sector,
+    world?.regime?.label,
+    world?.financials?.peRatioTTM != null ? `valuation pe ${world.financials.peRatioTTM}` : '',
+    world?.insider ? 'insider trades buying selling' : '',
+    world?.filings?.latest ? `filings ${world.filings.latest.type} 10-K annual report` : '',
+    world?.options ? 'options put call implied volatility' : ''
   ].filter(Boolean).join(' ');
 }
 
@@ -234,14 +263,15 @@ async function finishSources(articles, lang, ticker = '') {
 }
 
 function packPayload(result, { ai, aiError, articles, quote, world, style, notes, packed, lang }) {
+  const hydrated = attachQuoteFallbacks(world, quote, result?.ticker, lang);
   const decision = ai
-    ? reconcileAi(ai, result, articles, lang, world, notes)
+    ? reconcileAi(ai, result, articles, lang, hydrated, notes)
     : null;
   const briefing = buildBriefing({
     result,
     quote,
     articles,
-    world,
+    world: hydrated,
     style,
     notes,
     notesReply: decision?.notesReply || '',
@@ -250,11 +280,11 @@ function packPayload(result, { ai, aiError, articles, quote, world, style, notes
     lang
   });
   if (!decision && notes && !briefing.notesReply) {
-    briefing.notesReply = fallbackNotesReply(notes, world, lang);
+    briefing.notesReply = fallbackNotesReply(notes, hydrated, lang);
   }
   if (decision && !briefing.notesReply) briefing.notesReply = decision.notesReply || '';
   if (notes && (!briefing.claimCheck || briefing.claimCheck === 'none')) {
-    const machine = worstClaimStatus(checkUserClaims(notes, world?.hits || []));
+    const machine = worstClaimStatus(checkUserClaims(notes, hydrated?.hits || []));
     if (machine) briefing.claimCheck = machine;
   }
   const mergedSources = mergeSourcesWithBriefing(packed, briefing, articles);
@@ -355,9 +385,11 @@ async function buildDeskPayload(ticker, name, { lang = 'en', style, notes, onEve
     worldPromise
   ]);
   const result = await generatePredictions(ticker, candles, articles);
+  const hydrated = attachQuoteFallbacks(world, quote, ticker, locale);
+  applyDeskFundamentals(result, hydrated);
   await emit('status', { phase: 'model' });
   return attachAiDecision(result, articles, resolvedName, quote, locale, {
-    world,
+    world: hydrated,
     style: briefStyle,
     notes: briefNotes,
     onToken: onEvent ? (text) => emit('token', { text }) : null

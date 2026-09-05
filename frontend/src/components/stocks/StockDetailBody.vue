@@ -260,6 +260,63 @@
       </div>
     </section>
 
+    <section v-if="insiderTrades.length" class="detail-section">
+      <p class="detail-kicker">{{ $t('detail.insider') }}</p>
+      <ul class="space-y-3">
+        <li v-for="(row, i) in insiderTrades" :key="i" class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+          <span
+            class="font-mono text-xs uppercase"
+            :class="row.side === 'sell' ? 'text-bear' : 'text-bull'"
+          >{{ row.side === 'sell' ? $t('detail.insiderSell') : $t('detail.insiderBuy') }}</span>
+          <span class="text-gray-200">{{ row.name }}</span>
+          <span v-if="row.shares" class="font-mono text-gray-400">{{ formatCompact(Math.abs(row.shares)) }}</span>
+          <span v-if="row.date" class="font-mono text-[11px] text-gray-600">{{ row.date }}</span>
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="filingItems.length" class="detail-section">
+      <p class="detail-kicker">{{ $t('detail.filings') }}</p>
+      <ul class="space-y-3">
+        <li v-for="(f, i) in filingItems" :key="f.url || i">
+          <a
+            v-if="hrefOf(f.url)"
+            :href="hrefOf(f.url)"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-sm text-accent hover:underline underline-offset-2"
+          >{{ f.type || f.title }}</a>
+          <span v-else class="text-sm text-gray-200">{{ f.type || f.title }}</span>
+          <p class="mt-0.5 text-[11px] font-mono text-gray-600">
+            <span v-if="f.date">{{ f.date }}</span>
+            <span v-if="f.title && f.title !== f.type"> · {{ f.title }}</span>
+          </p>
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="optionsSnap" class="detail-section">
+      <p class="detail-kicker">{{ $t('detail.options') }}</p>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div v-if="optionsSnap.putCallVolume != null" class="card-sm px-3 py-3">
+          <div class="text-[11px] font-mono text-gray-500">{{ $t('detail.putCall') }}</div>
+          <div class="mt-1 text-sm font-mono text-gray-100">{{ formatNumber(optionsSnap.putCallVolume, 2) }}</div>
+        </div>
+        <div v-if="optionsSnap.putCallOi != null" class="card-sm px-3 py-3">
+          <div class="text-[11px] font-mono text-gray-500">{{ $t('detail.putCallOi') }}</div>
+          <div class="mt-1 text-sm font-mono text-gray-100">{{ formatNumber(optionsSnap.putCallOi, 2) }}</div>
+        </div>
+        <div v-if="optionsSnap.impliedVol != null" class="card-sm px-3 py-3">
+          <div class="text-[11px] font-mono text-gray-500">{{ $t('detail.impliedVol') }}</div>
+          <div class="mt-1 text-sm font-mono text-gray-100">{{ formatNumber(optionsSnap.impliedVol * 100, 0) }}%</div>
+        </div>
+        <div v-if="optionsSnap.expiry" class="card-sm px-3 py-3">
+          <div class="text-[11px] font-mono text-gray-500">{{ $t('detail.expiry') }}</div>
+          <div class="mt-1 text-sm font-mono text-gray-100">{{ optionsSnap.expiry }}</div>
+        </div>
+      </div>
+    </section>
+
     <section v-if="verdict?.digest || verdict?.sources?.length" class="detail-section">
       <p class="detail-kicker">{{ $t('verdict.sources') }}</p>
       <SourceList :items="verdict.sources" :digest="verdict.digest" />
@@ -309,6 +366,9 @@ const briefing = computed(() => prediction.value?.briefing || verdict.value?.bri
 
 const considered = computed(() => briefing.value?.considered || []);
 const skipped = computed(() => briefing.value?.skipped || []);
+const insiderTrades = computed(() => (briefing.value?.insider || []).filter(r => r?.name).slice(0, 8));
+const filingItems = computed(() => (briefing.value?.filings || []).filter(f => f?.type || f?.title).slice(0, 8));
+const optionsSnap = computed(() => briefing.value?.options || null);
 const headlines = computed(() => (briefing.value?.headlines || []).filter(h => h?.title).slice(0, 8));
 const world = computed(() => (briefing.value?.world || []).filter(w => w?.title).slice(0, 6));
 const overlooked = computed(() => (verdict.value?.overlooked || []).filter(Boolean));

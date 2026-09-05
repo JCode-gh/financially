@@ -78,23 +78,71 @@ export async function getCompanyProfile(ticker) {
   });
 }
 
+function firstNum(...vals) {
+  for (const v of vals) {
+    if (v == null || v === '') continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && n !== 0) return n;
+  }
+  return null;
+}
+
 export async function getBasicFinancials(ticker) {
   return cached(`financials_${ticker}`, 3600_000, async () => {
     const data = await get('/stock/metric', { symbol: ticker, metric: 'all' });
     if (!data || !data.metric) return null;
     const m = data.metric;
+    const pe = firstNum(
+      m.peTTM,
+      m.peNormalizedAnnual,
+      m.peAnnual,
+      m.peBasicExclExtraTTM,
+      m.peExclExtraTTM,
+      m.peExclExtraAnnual
+    );
     return {
-      peRatioTTM: m.peNormalizedAnnual,
-      epsGrowth: m.epsGrowth5Y,
-      revenueGrowth: m.revenueGrowth5Y,
-      roeTTM: m.roeTTM,
-      debtToEquity: m.totalDebt_totalEquityAnnual,
-      currentRatio: m.currentRatioAnnual,
-      dividendYield: m.dividendYieldIndicatedAnnual,
-      priceToBook: m.pbAnnual,
+      peRatioTTM: pe,
+      forwardPE: firstNum(m.forwardPE, m.peNormalizedAnnual),
+      epsGrowth: firstNum(m.epsGrowthTTMYoy, m.epsGrowth5Y, m.epsGrowth3Y),
+      revenueGrowth: firstNum(m.revenueGrowthTTMYoy, m.revenueGrowth5Y, m.revenueGrowth3Y),
+      roeTTM: firstNum(m.roeTTM, m.roeRfy),
+      debtToEquity: firstNum(m.totalDebt_totalEquityAnnual, m.totalDebtToEquity),
+      currentRatio: firstNum(m.currentRatioTTM, m.currentRatioAnnual),
+      dividendYield: firstNum(m.dividendYieldIndicatedAnnual, m.dividendYieldTTM),
+      priceToBook: firstNum(m.pbAnnual, m.pbQuarterly, m.pb),
       week52High: m['52WeekHigh'],
       week52Low: m['52WeekLow']
     };
+  });
+}
+
+export async function getInsiderTransactions(ticker) {
+  return cached(`insider_${ticker}`, 3600_000, async () => {
+    const from = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
+    const data = await get('/stock/insider-transactions', { symbol: ticker, from });
+    const rows = data?.data;
+    if (!Array.isArray(rows) || !rows.length) return null;
+    return rows.slice(0, 40).map(r => ({
+      name: r.name || '',
+      shares: Number(r.change) || 0,
+      price: r.transactionPrice != null ? Number(r.transactionPrice) : null,
+      date: r.transactionDate || r.filingDate || '',
+      code: r.transactionCode || ''
+    }));
+  });
+}
+
+export async function getFilings(ticker) {
+  return cached(`filings_${ticker}`, 6 * 3600_000, async () => {
+    const data = await get('/stock/filings', { symbol: ticker });
+    const rows = Array.isArray(data) ? data : [];
+    if (!rows.length) return null;
+    return rows.slice(0, 20).map(r => ({
+      type: r.form || r.type || '',
+      date: r.filedDate || r.acceptedDate || '',
+      title: r.form || r.reportUrl || '',
+      url: r.reportUrl || r.filingUrl || ''
+    })).filter(f => f.type || f.url);
   });
 }
 

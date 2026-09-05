@@ -514,3 +514,156 @@ export async function searchSymbols(query) {
   if (data.length) cache.set(key, { data, ts: Date.now() });
   return data;
 }
+
+function yraw(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'object' && v.raw != null) {
+    const n = Number(v.raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function ystr(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object' && v.fmt) return String(v.fmt);
+  return '';
+}
+
+function ydate(v) {
+  const fmt = ystr(v);
+  if (fmt && /^\d{4}-/.test(fmt)) return fmt.slice(0, 10);
+  const raw = typeof v === 'object' ? v?.raw : v;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fmt.slice(0, 10);
+  const ms = n > 1e12 ? n : n * 1000;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0];
+}
+
+async function yahooJson(url) {
+  const viaCurl = await curlYahooJson(url);
+  if (viaCurl) return viaCurl;
+  await ensureSession();
+  const headers = {
+    'User-Agent': UA,
+    Accept: '*/*',
+    Referer: 'https://finance.yahoo.com/'
+  };
+  if (session.cookie) headers.Cookie = session.cookie;
+  try {
+    const res = await http.get(url, { headers, timeout: 10000 });
+    return res.data;
+  } catch {
+    return null;
+  }
+}
+
+function quoteSummaryUrl(base, symbol, modules, crumb) {
+  const qs = new URLSearchParams({ modules: modules.join(',') });
+  if (crumb) qs.set('crumb', crumb);
+  return `${base}/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?${qs}`;
+}
+
+export async function getYahooDeskFundamentals(symbol) {
+  return cached(`yh_fund_${symbol}`, 3600_000, async () => {
+    await ensureSession();
+    const modules = [
+      'summaryProfile',
+      'defaultKeyStatistics',
+      'financialData',
+      'insiderTransactions',
+      'secFilings'
+    ];
+    let data = null;
+    for (const base of [BASE1, BASE2]) {
+      data = await yahooJson(quoteSummaryUrl(base, symbol, modules, session.crumb));
+      if (data?.quoteSummary?.result?.[0]) break;
+    }
+    const row = data?.quoteSummary?.result?.[0];
+    if (!row) return null;
+
+    const profile = row.summaryProfile || {};
+    const stats = row.defaultKeyStatistics || {};
+    const fin = row.financialData || {};
+    const tx = row.insiderTransactions?.transactions || [];
+    const filings = row.secFilings?.filings || [];
+
+    return {
+      profile: {
+        name: '',
+        country: profile.country || '',
+        industry: profile.industry || '',
+        sector: profile.sector || '',
+        exchange: ''
+      },
+      financials: {
+        peRatioTTM: yraw(stats.trailingPE) ?? yraw(fin.trailingPE),
+        forwardPE: yraw(stats.forwardPE) ?? yraw(fin.forwardPE),
+        priceToBook: yraw(stats.priceToBook),
+        epsGrowth: yraw(fin.earningsGrowth),
+        revenueGrowth: yraw(fin.revenueGrowth),
+        roeTTM: yraw(fin.returnOnEquity),
+        debtToEquity: (() => {
+          const de = yraw(fin.debtToEquity);
+          return de != null && de > 10 ? de / 100 : de;
+        })(),
+        currentRatio: yraw(fin.currentRatio),
+        dividendYield: yraw(stats.dividendYield) ?? yraw(fin.dividendYield)
+      },
+      insider: tx.slice(0, 30).map(t => {
+        const text = String(t.transactionText || t.filerRelation || '').toLowerCase();
+        const shares = yraw(t.shares) || 0;
+        const sale = /sale|sold|sell/.test(text);
+        return {
+          name: t.filerName || '',
+          shares: sale ? -Math.abs(shares) : Math.abs(shares),
+          price: null,
+          date: ydate(t.startDate),
+          code: sale ? 'S' : 'P'
+        };
+      }),
+      filings: filings.slice(0, 20).map(f => ({
+        type: f.type || '',
+        date: f.date || '',
+        title: f.title || f.type || '',
+        url: f.edgarUrl || f.url || ''
+      })).filter(f => f.type || f.url)
+    };
+  });
+}
+
+export async function getYahooOptionsSnapshot(symbol) {
+  return cached(`yh_opt_${symbol}`, 30 * 60_000, async () => {
+    let data = null;
+    for (const base of [BASE1, BASE2]) {
+      data = await yahooJson(`${base}/v7/finance/options/${encodeURIComponent(symbol)}`);
+      if (data?.optionChain?.result?.[0]) break;
+    }
+    const row = data?.optionChain?.result?.[0];
+    const chain = row?.options?.[0];
+    if (!chain) return null;
+    const calls = chain.calls || [];
+    const puts = chain.puts || [];
+    const callVolume = calls.reduce((s, c) => s + (c.volume || 0), 0);
+    const putVolume = puts.reduce((s, c) => s + (c.volume || 0), 0);
+    const callOi = calls.reduce((s, c) => s + (c.openInterest || 0), 0);
+    const putOi = puts.reduce((s, c) => s + (c.openInterest || 0), 0);
+    const ivs = [...calls, ...puts].map(x => x.impliedVolatility).filter(v => v > 0);
+    const iv = ivs.length ? ivs.reduce((s, v) => s + v, 0) / ivs.length : (row.quote?.impliedVolatility || null);
+    return {
+      expiry: chain.expirationDate
+        ? new Date(chain.expirationDate * 1000).toISOString().split('T')[0]
+        : '',
+      callVolume,
+      putVolume,
+      callOi,
+      putOi,
+      putCallVolume: callVolume > 0 ? putVolume / callVolume : null,
+      putCallOi: callOi > 0 ? putOi / callOi : null,
+      impliedVol: iv != null ? Number(iv) : null
+    };
+  });
+}

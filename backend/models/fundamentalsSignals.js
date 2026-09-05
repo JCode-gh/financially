@@ -65,22 +65,24 @@ export function earningsDriftSignal(candles, earnings) {
   return 0;
 }
 
+export function signalsFromFinancials(fin) {
+  if (!fin) return { valuation: 0, growth: 0, quality: 0 };
+  return {
+    growth: growthSignal(fin.epsGrowth ?? fin.revenueGrowth),
+    valuation: valuationSignal(fin.peRatioTTM, fin.priceToBook),
+    quality: qualitySignal(fin.roeTTM, fin.currentRatio, fin.debtToEquity)
+  };
+}
+
 export async function getFundamentalSignals(ticker, candles, earnings) {
   const fin = await getBasicFinancials(ticker).catch(() => null);
-  const signals = {
-    valuation: 0,
-    growth: 0,
-    quality: 0,
-    earnings_drift: earningsDriftSignal(candles, earnings)
+  return {
+    signals: {
+      ...signalsFromFinancials(fin),
+      earnings_drift: earningsDriftSignal(candles, earnings)
+    },
+    fin
   };
-
-  if (fin) {
-    signals.growth = growthSignal(fin.epsGrowth ?? fin.revenueGrowth);
-    signals.valuation = valuationSignal(fin.peRatioTTM, fin.priceToBook);
-    signals.quality = qualitySignal(fin.roeTTM, fin.currentRatio, fin.debtToEquity);
-  }
-
-  return { signals, fin };
 }
 
 export function mergeFundamentalSignals(baseSignals, fundSignals) {

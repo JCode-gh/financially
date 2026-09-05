@@ -358,7 +358,16 @@ export default {
     sma200: 'SMA 200',
     stoch: 'Stoch',
     mfi: 'MFI',
-    range: 'Range'
+    range: 'Range',
+    insider: 'Insider trades',
+    filings: 'Filings',
+    options: 'Options',
+    insiderBuy: 'Buy',
+    insiderSell: 'Sell',
+    putCall: 'Put/call volume',
+    putCallOi: 'Put/call open interest',
+    impliedVol: 'Implied vol',
+    expiry: 'Expiry'
   },
   chart: {
     by: 'by {date}',
