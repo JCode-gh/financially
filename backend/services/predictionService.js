@@ -32,6 +32,26 @@ import { AppError } from '../lib/errors.js';
 
 const genCache = createTtlCache();
 const GEN_TTL_MS = 3 * 60_000;
+const OLLAMA_TRIES = 3;
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function decideTradeWithRetry(args) {
+  let lastErr;
+  for (let attempt = 1; attempt <= OLLAMA_TRIES; attempt++) {
+    try {
+      return await decideTrade(attempt === 1 ? args : { ...args, onToken: null });
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= OLLAMA_TRIES) break;
+      logger.warn(`Ollama decision failed (${attempt}/${OLLAMA_TRIES}): ${err.message}`);
+      await wait(800 * attempt);
+    }
+  }
+  throw lastErr;
+}
 
 async function loadModelInputs(ticker, name) {
   const [candles, articles, quote] = await Promise.all([
@@ -308,7 +328,7 @@ async function attachAiDecision(result, articles, name, quote, lang = 'en', extr
     const five = fiveDayFrom(result);
     const plan = result.tradePlan;
     const [ai, enriched] = await Promise.all([
-      decideTrade({
+      decideTradeWithRetry({
         ticker: result.ticker,
         name,
         price: result.indicators?.price,
