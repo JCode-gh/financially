@@ -166,7 +166,8 @@ export const useChatStore = defineStore('chat', () => {
     if (abort) abort.abort();
   }
 
-  async function send(text, { simple, watchlist } = {}) {
+  async function send(text, { simple, watchlist, portfolio } = {}) {
+    if (portfolio) focusSymbol.value = null;
     const content = String(text || '').trim();
     if (!content || sending.value) return;
     error.value = '';

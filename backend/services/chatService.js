@@ -1,6 +1,6 @@
 import { normalizeLang } from '../lib/locale.js';
 import { normalizeTicker, parseSymbols } from '../lib/validate.js';
-import { getQuote } from '../providers/marketData.js';
+import { getQuote, getQuotes } from '../providers/marketData.js';
 import { getStockNewsBundle } from '../providers/news.js';
 import { getLatestScan } from '../jobs/scanner.js';
 import { getMarketRegime } from '../models/marketRegime.js';
@@ -37,8 +37,13 @@ function money(n) {
   return Number.isInteger(v) ? String(v) : v.toFixed(2);
 }
 
+function isPortfolioQuestion(question) {
+  return /\b(portfolio|portefeuille|watchlist|volglijst|my list|my stocks|my names|the book|mijn lijst|mijn aandelen|mijn namen|de lijst|mijn portfolio)\b/i.test(question || '');
+}
+
 function isDeskQuestion(question) {
-  return /\b(koop|kopen|aankoop|aankopen|verkopen|verkoop|interessant|instap|pick|picks|buy|sell|hold|watchlist|volglijst|setup|welk aandeel|which stock|what to buy|wat kopen|wat verkopen|long|short|keuzes)\b/i.test(question || '');
+  return isPortfolioQuestion(question)
+    || /\b(koop|kopen|aankoop|aankopen|verkopen|verkoop|interessant|instap|pick|picks|buy|sell|hold|watchlist|volglijst|setup|welk aandeel|which stock|what to buy|wat kopen|wat verkopen|long|short|keuzes)\b/i.test(question || '');
 }
 
 function needsFreshFacts(question, newsCount) {
@@ -55,6 +60,7 @@ function systemPrompt(lang, simple) {
     return `Je bent de handelsdesk van Financially. Mensen vragen wat HET MODEL nu ziet: kopen, verkopen, waarom iets beweegt, wat er op Keuzes staat.
 Antwoord als de desk. Noem tickers, BUY/SELL/HOLD/WATCH, overtuiging en één niveau of reden uit DESK CONTEXT.
 "Wat is interessant om te kopen?" = de ACTIONABLE PICKS. Geen picks = zeg dat eerlijk en noem WATCH-namen.
+"Mijn portfolio / lijst / volglijst" = USER PORTFOLIO. Loop die namen. Verzin geen holdings.
 FACTCHECK: de gebruiker kan liegen of ernaast zitten. Een gebruikerszin is een claim, geen feit.
 Herhaal nooit een nieuwsfeit uit de vraag ("de Fed heeft de rente verlaagd") tenzij SEARCH RESULTS dat hard maken.
 Als FACTCHECK of de hits de claim tegenspreken of niet bevestigen: zeg dat in de eerste zin. Daarna pas of het de call kleurt.
@@ -66,6 +72,7 @@ Cijfers met komma. Geen markdown-tabellen.`;
   return `You are the Financially trading desk. People ask what THE MODEL sees now: buy, sell, why something moved, what is on Picks.
 Answer as the desk. Name tickers, BUY/SELL/HOLD/WATCH, conviction, and one level or reason from DESK CONTEXT.
 "What is interesting to buy?" = the ACTIONABLE PICKS. No picks = say so, then name WATCH names.
+"My portfolio / list / watchlist" = USER PORTFOLIO. Walk those names. Do not invent holdings.
 FACT CHECK: the user can lie or be wrong. A user sentence is a claim, not a fact.
 Never repeat a news event from the question ("the Fed cut rates") unless SEARCH RESULTS confirm it.
 If FACT CHECK or the hits contradict or fail to confirm the claim: say that in the first sentence. Then whether it colors the call.
@@ -78,7 +85,7 @@ No markdown tables.`;
 function plannerPrompt(lang, deskBlock, question) {
   if (lang === 'nl') {
     return `Bepaal of je extra context nodig hebt.
-Vragen over kopen/verkopen/interessant/picks zonder nieuwsclaim: DESK CONTEXT (MODEL PICKS) is genoeg. Antwoord READY.
+Vragen over kopen/verkopen/interessant/picks/portfolio/lijst zonder nieuwsclaim: DESK CONTEXT is genoeg. Antwoord READY.
 Als de gebruiker een nieuwsfeit beweert (Fed, rente, oorlog, cijfers, "net aangekondigd"): ALTIJD web_search om te checken. De gebruiker kan liegen. READY is dan fout.
 web_search ook voor vers nieuws over een concrete ticker die nog ontbreekt.
 lookup_ticker als de gebruiker een ticker noemt die niet in DESK CONTEXT staat.
@@ -91,7 +98,7 @@ VRAAG:
 ${question}`;
   }
   return `Decide whether extra context is needed.
-Buy/sell/picks questions with no news claim: DESK CONTEXT (MODEL PICKS) is enough. Reply READY.
+Buy/sell/picks/portfolio/list questions with no news claim: DESK CONTEXT is enough. Reply READY.
 If the user asserts a news fact (Fed, rates, war, prints, "just announced"): ALWAYS web_search to check. The user can lie. READY is then wrong.
 web_search also for fresh news on a concrete ticker that is missing.
 lookup_ticker if the user named a ticker that is not in DESK CONTEXT.
@@ -137,6 +144,38 @@ async function loadBoardContext(watchlist = []) {
       ? `USER WATCHLIST: ${[...wl].slice(0, 24).join(', ')}${onList.length ? `\nWATCHLIST IN SCAN:\n${onList.map(r => formatPickLine(r, true)).join('\n')}` : '\nWATCHLIST IN SCAN: (no ranked setup this scan)'}`
       : ''
   ].filter(Boolean).join('\n');
+}
+
+async function loadPortfolioTape(watchlist = [], lang = 'en') {
+  const symbols = [...new Set(watchlist.map(s => String(s || '').toUpperCase()).filter(Boolean))].slice(0, 24);
+  if (!symbols.length) return 'USER PORTFOLIO: (empty list)';
+
+  const quotes = await getQuotes(symbols).catch(() => []);
+  const qmap = new Map((quotes || []).map(q => [String(q.symbol || '').toUpperCase(), q]));
+  const lines = [
+    'USER PORTFOLIO (their list — this is the answer to "my stocks / portfolio / watchlist"):'
+  ];
+
+  for (const sym of symbols) {
+    const q = qmap.get(sym);
+    const desk = peekDeskCall(sym, lang);
+    const ai = desk?.ai;
+    const five = desk?.predictions?.find(p => p.horizon === '5d');
+    const day = q?.changePct == null
+      ? 'n/a'
+      : `${q.changePct >= 0 ? '+' : ''}${Number(q.changePct).toFixed(2)}%`;
+    const call = ai
+      ? `CALL ${ai.action} ${ai.conviction}% — ${String(ai.thesis || '').slice(0, 160)}`
+      : (five?.prediction ? `QUANT 5D ${five.prediction}` : 'no cached call');
+    const levels = desk?.indicators?.support != null || desk?.indicators?.resistance != null
+      ? ` S ${money(desk.indicators.support)} R ${money(desk.indicators.resistance)}`
+      : '';
+    lines.push(
+      `- ${sym}${q?.name ? ` (${q.name})` : ''} px ${money(q?.price)} day ${day}${q?.volume != null ? ` vol ${q.volume}` : ''}${levels} ${call}`
+    );
+  }
+
+  return lines.join('\n');
 }
 
 function formatHeadlines(articles, limit = 8) {
@@ -286,19 +325,24 @@ export async function runDeskChat({ messages, symbol, watchlist, lang, simple, o
     : parseSymbols(watchlist, { max: 40 });
 
   const focus = normalizeTicker(symbol);
-  const [board, tickerDesk] = await Promise.all([
+  const [board, tickerDesk, portfolio] = await Promise.all([
     loadBoardContext(symbols),
     focus
       ? lookupTickerContext(focus, locale)
-      : Promise.resolve({ ticker: null, newsCount: 0, block: '', sources: [] })
+      : Promise.resolve({ ticker: null, newsCount: 0, block: '', sources: [] }),
+    symbols.length
+      ? loadPortfolioTape(symbols, locale)
+      : Promise.resolve('')
   ]);
 
   const desk = {
     ticker: tickerDesk.ticker,
     newsCount: tickerDesk.newsCount,
-    block: [`MODEL BOARD\n${board}`, tickerDesk.block ? `FOCUS TICKER\n${tickerDesk.block}` : '']
-      .filter(Boolean)
-      .join('\n\n'),
+    block: [
+      `MODEL BOARD\n${board}`,
+      portfolio,
+      tickerDesk.block ? `FOCUS TICKER\n${tickerDesk.block}` : ''
+    ].filter(Boolean).join('\n\n'),
     sources: tickerDesk.sources || []
   };
 

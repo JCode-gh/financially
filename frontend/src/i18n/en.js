@@ -316,7 +316,24 @@ export default {
   dashboard: {
     backendDown: 'Backend not connected',
     backendHint: 'Run {cmd} to start the API.',
-    backendShort: 'Backend not connected — run {cmd}'
+    backendShort: 'Backend not connected — run {cmd}',
+    book: 'The book',
+    bookHint: '{n} names on {name}',
+    bookEmpty: 'Nothing on this list yet',
+    bookEmptyHint: 'Add tickers to see quotes, calls, levels, and news here.',
+    focus: 'Selected name',
+    tape: 'Headlines on the list',
+    model: 'Model extras',
+    addPlaceholder: 'Add ticker',
+    openName: 'Open {symbol}',
+    askTitle: 'Ask about this list',
+    askHint: 'The desk answers from your watchlist — quotes, calls, and news.',
+    askPlaceholder: 'Ask about your portfolio…',
+    askOpen: 'Open full ask',
+    noCall: 'No desk call cached yet — click the name to generate one.',
+    selectToChart: 'Click a name to load the chart and the call.',
+    headlines: 'Latest',
+    week52: '52-week'
   },
   notFound: {
     missing: 'This page does not exist.',
@@ -560,7 +577,11 @@ export default {
       buy: 'What does the desk want to buy right now?',
       pe: 'What does a P/E ratio tell me?',
       market: 'What is the market regime today?',
-      earnings: 'Any earnings I should watch?'
+      earnings: 'Any earnings I should watch?',
+      portfolio: 'How does my list look today?',
+      portfolioMove: 'What is moving on my portfolio?',
+      portfolioSell: 'What should I sell on this list?',
+      portfolioEarn: 'Any earnings on my names?'
     }
   }
 };

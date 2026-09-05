@@ -207,6 +207,9 @@ const phaseLabel = computed(() => {
 const suggestions = computed(() => {
   const sym = chat.focusSymbol || market.selectedSymbol;
   const items = [];
+  if (market.watchlistSymbols.length) {
+    items.push({ id: 'book', text: t('chat.suggestions.portfolio') });
+  }
   if (sym) items.push({ id: 'move', text: t('chat.suggestions.move', { symbol: sym }) });
   items.push(
     { id: 'buy', text: t('chat.suggestions.buy') },

@@ -316,7 +316,24 @@ export default {
   dashboard: {
     backendDown: 'Backend niet verbonden',
     backendHint: 'Start de API met {cmd}.',
-    backendShort: 'Backend niet verbonden — start {cmd}'
+    backendShort: 'Backend niet verbonden — start {cmd}',
+    book: 'Het boek',
+    bookHint: '{n} namen op {name}',
+    bookEmpty: 'Nog niets op deze lijst',
+    bookEmptyHint: 'Voeg tickers toe om koersen, advies, niveaus en nieuws hier te zien.',
+    focus: 'Geselecteerde naam',
+    tape: 'Koppen op de lijst',
+    model: 'Model extra',
+    addPlaceholder: 'Ticker toevoegen',
+    openName: 'Open {symbol}',
+    askTitle: 'Vraag over deze lijst',
+    askHint: 'De desk antwoordt vanuit je volglijst — koersen, advies en nieuws.',
+    askPlaceholder: 'Vraag over je portfolio…',
+    askOpen: 'Volledige vraag openen',
+    noCall: 'Nog geen desk-advies in cache — klik de naam om er een te maken.',
+    selectToChart: 'Klik een naam om de grafiek en het advies te laden.',
+    headlines: 'Laatste',
+    week52: '52 weken'
   },
   notFound: {
     missing: 'Deze pagina bestaat niet.',
@@ -560,7 +577,11 @@ export default {
       buy: 'Wat wil de desk nu kopen?',
       pe: 'Wat zegt een koers-winstverhouding?',
       market: 'Wat is het marktregime nu?',
-      earnings: 'Welke cijfers moet ik in de gaten houden?'
+      earnings: 'Welke cijfers moet ik in de gaten houden?',
+      portfolio: 'Hoe ziet mijn lijst er vandaag uit?',
+      portfolioMove: 'Wat beweegt er op mijn portfolio?',
+      portfolioSell: 'Wat moet ik op deze lijst verkopen?',
+      portfolioEarn: 'Welke cijfers staan er op mijn namen?'
     }
   }
 };

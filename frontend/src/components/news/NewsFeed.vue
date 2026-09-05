@@ -68,6 +68,10 @@ const marketStore = useMarketStore();
 const ui = useUiStore();
 const { t } = useI18n();
 
+const props = defineProps({
+  preferWatch: { type: Boolean, default: false }
+});
+
 const mode = ref('watch');
 const activeFilter = computed(() => newsStore.activeFilter);
 const selectedSymbol = computed(() => marketStore.selectedSymbol);
@@ -136,7 +140,7 @@ watch(selectedSymbol, async (sym) => {
     mode.value = 'watch';
     return;
   }
-  mode.value = 'stock';
+  if (!props.preferWatch) mode.value = 'stock';
   await newsStore.fetchStockNews(sym, marketStore.selectedQuote?.name);
 }, { immediate: true });
 
