@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { getMarketNewsBundle, getStockNewsBundle } from '../providers/news.js';
+import { getMarketNewsBundle, getStockNewsBundle, getStockChartNews } from '../providers/news.js';
 import { asyncHandler, ok } from '../lib/errors.js';
-import { normalizeTicker, parseSymbols } from '../lib/validate.js';
+import { clampInt, normalizeTicker, parseSymbols } from '../lib/validate.js';
 
 const router = Router();
 
@@ -14,6 +14,14 @@ router.get('/market', asyncHandler(async (req, res) => {
     marketSentiment: bundle.marketSentiment,
     count: bundle.count
   });
+}));
+
+router.get('/stock/:symbol/history', asyncHandler(async (req, res) => {
+  const ticker = normalizeTicker(req.params.symbol);
+  if (!ticker) return ok(res, [], { count: 0 });
+  const days = clampInt(req.query.days, { min: 30, max: 400, fallback: 400 });
+  const articles = await getStockChartNews(ticker, days);
+  return ok(res, articles, { count: articles.length });
 }));
 
 router.get('/stock/:symbol', asyncHandler(async (req, res) => {

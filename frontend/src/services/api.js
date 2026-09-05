@@ -55,7 +55,11 @@ export const newsApi = {
       names: names?.join('|')
     }
   }),
-  stock: (symbol, name) => http.get(`/news/stock/${symPath(symbol)}`, { params: { name } })
+  stock: (symbol, name) => http.get(`/news/stock/${symPath(symbol)}`, { params: { name } }),
+  stockHistory: (symbol, name, days = 400) => http.get(`/news/stock/${symPath(symbol)}/history`, {
+    params: { name, days },
+    timeout: 45000
+  })
 };
 
 export const predictionsApi = {

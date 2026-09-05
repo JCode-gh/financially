@@ -42,24 +42,56 @@ export async function getMarketNews(category = 'general') {
   });
 }
 
+function mapCompanyNews(data, ticker) {
+  if (!Array.isArray(data)) return [];
+  return data.map(n => ({
+    id: n.id,
+    headline: n.headline,
+    summary: n.summary,
+    source: n.source,
+    url: n.url,
+    image: n.image,
+    publishedAt: n.datetime ? new Date(n.datetime * 1000).toISOString() : null,
+    related: n.related || '',
+    trustedTicker: ticker
+  })).filter(n => n.headline && n.publishedAt);
+}
+
 export async function getStockNews(ticker) {
   const today = new Date().toISOString().split('T')[0];
-  // 90-day window so the chart can mark pumps/dumps on recent history, not
-  // only the last two weeks, while sentiment still has a recency baseline.
   const from = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
   return cached(`stock_news_${ticker}`, 300_000, async () => {
     const data = await get('/company-news', { symbol: ticker, from, to: today });
-    if (!data) return [];
-    return data.slice(0, 80).map(n => ({
-      id: n.id,
-      headline: n.headline,
-      summary: n.summary,
-      source: n.source,
-      url: n.url,
-      image: n.image,
-      publishedAt: new Date(n.datetime * 1000).toISOString(),
-      related: n.related || ''
-    }));
+    return mapCompanyNews(data, ticker).slice(0, 80);
+  });
+}
+
+export async function getStockNewsHistory(ticker, days = 400) {
+  const span = Math.min(Math.max(Number(days) || 400, 30), 400);
+  const key = `stock_news_hist_${String(ticker || '').toUpperCase()}_${span}`;
+  return cached(key, 300_000, async () => {
+    const now = Date.now();
+    const windows = [];
+    for (let offset = 0; offset < span; offset += 90) {
+      const to = new Date(now - offset * 86400000).toISOString().split('T')[0];
+      const from = new Date(now - Math.min(span, offset + 90) * 86400000).toISOString().split('T')[0];
+      if (from >= to) continue;
+      windows.push({ from, to });
+    }
+    const chunks = await Promise.all(
+      windows.map(w => get('/company-news', { symbol: ticker, from: w.from, to: w.to }))
+    );
+    const seen = new Set();
+    const out = [];
+    for (const data of chunks) {
+      for (const n of mapCompanyNews(data, ticker)) {
+        const id = n.url || String(n.id || '') || n.headline;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(n);
+      }
+    }
+    return out.slice(0, 1000);
   });
 }
 

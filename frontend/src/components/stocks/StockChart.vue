@@ -122,6 +122,8 @@ import { formatPrice, formatPct } from '../../utils/format.js';
 import { setupReason, shortSentence } from '../../utils/picks.js';
 import { currentLocale, t } from '../../i18n/index.js';
 import { useNewsStore } from '../../stores/newsStore.js';
+import { buildForecastPath, nearLevel, sortedTargets } from '../../utils/forecastPath.js';
+import { newsApi } from '../../services/api.js';
 
 const props = defineProps({
   symbol: String,
@@ -162,9 +164,8 @@ let forecastBars = [];
 let forecastTurns = [];
 let forecastLevels = { support: null, resistance: null };
 let newsMarks = [];
+let chartNewsArticles = [];
 
-const HORIZON_DAYS = { '1d': 1, '5d': 5, '30d': 30 };
-const FORECAST_DAYS = 30;
 const HORIZON_STYLE = {
   '1d':  { color: '#58a6ff', label: '1d' },
   '5d':  { color: '#00d488', label: '5d' },
@@ -311,16 +312,6 @@ function tradingDaysAhead(time, days) {
   return t;
 }
 
-function sortedTargets(targets) {
-  const order = { '1d': 1, '5d': 2, '30d': 3 };
-  return [...targets].sort((a, b) => (order[a.horizon] || 99) - (order[b.horizon] || 99));
-}
-
-function nearLevel(price, level, pct = 0.025) {
-  if (price == null || level == null || !level) return false;
-  return Math.abs(price - level) / level <= pct;
-}
-
 function reasonDir(text) {
   const s = String(text || '');
   if (/oversold|washed out/i.test(s)) return 1;
@@ -395,6 +386,15 @@ function forecastWhyText(anchor, pred, currency) {
   if (anchor.exitWhy === 'oversold' && rsi != null) {
     return t('chart.turn.oversold', { n: Math.round(rsi) });
   }
+  if (anchor.kind === 'test' && resistance != null && nearLevel(anchor.price, resistance, 0.03)) {
+    return t('chart.turn.testResistance', { price: level(resistance) });
+  }
+  if (anchor.kind === 'test' && support != null && nearLevel(anchor.price, support, 0.03)) {
+    return t('chart.turn.testSupport', { price: level(support) });
+  }
+  if (anchor.kind === 'pullback') {
+    return t('chart.turn.pullback');
+  }
   if (anchor.kind === 'fade' && resistance != null) {
     return t('chart.turn.fadeResistance', { price: level(resistance) });
   }
@@ -436,60 +436,6 @@ function forecastWhyText(anchor, pred, currency) {
   return why || t('chart.turn.target', { horizon: anchor.horizon || '30d' });
 }
 
-function insertStructureAnchors(anchors, pred) {
-  if (anchors.length < 2) return anchors;
-  const support = pred?.indicators?.support;
-  const resistance = pred?.indicators?.resistance;
-  const rsi = pred?.indicators?.rsi;
-  const origin = anchors[0].price;
-  const extras = [];
-
-  for (let i = 0; i < anchors.length - 1; i++) {
-    const a = anchors[i];
-    const b = anchors[i + 1];
-    const span = b.day - a.day;
-    if (span < 8 || a.day < 5) continue;
-
-    const goingUp = b.price > a.price + origin * 0.002;
-    const goingDown = b.price < a.price - origin * 0.002;
-    const day = Math.min(b.day - 3, a.day + Math.max(3, Math.round(span * 0.32)));
-
-    if (goingUp) {
-      const nearR = nearLevel(a.price, resistance, 0.035) && a.price >= resistance * 0.98;
-      const stretched = rsi != null && rsi >= 70 && (a.price - origin) / origin > 0.015;
-      if (!nearR && !stretched) continue;
-      let price = a.price - Math.max(a.price - origin, origin * 0.02) * 0.38;
-      let kind = 'resume';
-      if (support != null && support < a.price && support > origin * 0.97) {
-        price = support;
-        kind = 'bounce';
-      }
-      price = Math.min(price, a.price - Math.abs(a.price - origin) * 0.1);
-      a.exitWhy = nearR ? 'fadeResistance' : 'overbought';
-      extras.push({ at: i + 1, anchor: { day, price, kind, horizon: null } });
-    } else if (goingDown) {
-      const nearS = nearLevel(a.price, support, 0.035) && a.price <= support * 1.02;
-      const washed = rsi != null && rsi <= 30 && (origin - a.price) / origin > 0.015;
-      if (!nearS && !washed) continue;
-      let price = a.price + Math.max(origin - a.price, origin * 0.02) * 0.38;
-      let kind = 'resume';
-      if (resistance != null && resistance > a.price && resistance < origin * 1.03) {
-        price = resistance;
-        kind = 'fade';
-      }
-      price = Math.max(price, a.price + Math.abs(origin - a.price) * 0.1);
-      a.exitWhy = nearS ? 'bounceSupport' : 'oversold';
-      extras.push({ at: i + 1, anchor: { day, price, kind, horizon: null } });
-    }
-  }
-
-  const next = [...anchors];
-  for (let k = extras.length - 1; k >= 0; k--) {
-    next.splice(extras[k].at, 0, extras[k].anchor);
-  }
-  return next;
-}
-
 function labelForecastAnchors(anchors, pred, currency) {
   const turns = [];
   for (let i = 0; i < anchors.length; i++) {
@@ -499,7 +445,8 @@ function labelForecastAnchors(anchors, pred, currency) {
     a.inDir = prev ? Math.sign(a.price - prev.price) : 0;
     a.outDir = nxt ? Math.sign(nxt.price - a.price) : 0;
     const reversal = !!(a.inDir && a.outDir && a.inDir !== a.outDir);
-    const structural = a.kind === 'bounce' || a.kind === 'fade' || a.kind === 'resume' || !!a.exitWhy;
+    const structural = a.kind === 'bounce' || a.kind === 'fade' || a.kind === 'resume'
+      || a.kind === 'test' || a.kind === 'pullback' || !!a.exitWhy;
     a.showWhy = i === 0 || reversal || structural;
   }
   const marked = anchors.filter(a => a.showWhy);
@@ -522,162 +469,30 @@ function labelForecastAnchors(anchors, pred, currency) {
   return turns;
 }
 
-function forecastAnchors(lastClose, targets, pred) {
-  const anchors = [{ day: 0, price: lastClose, kind: 'now' }];
-  const seen = new Set([0]);
-  for (const p of sortedTargets(targets)) {
-    const day = HORIZON_DAYS[p.horizon];
-    if (day == null || seen.has(day) || p.targetPrice == null) continue;
-    seen.add(day);
-    anchors.push({ day, price: p.targetPrice, kind: 'horizon', horizon: p.horizon });
-  }
-  return insertStructureAnchors(anchors, pred);
-}
-
-function horizonAtDay(day) {
-  if (day === 1) return '1d';
-  if (day === 5) return '5d';
-  if (day === 30) return '30d';
-  return null;
-}
-
-function seedRng(symbol, lastClose, targets) {
-  const key = `${symbol || ''}|${Number(lastClose).toFixed(4)}|${targets.map(p => `${p.horizon}:${p.targetPrice}`).join(',')}`;
-  let h = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  let a = h >>> 0;
-  return () => {
-    a = a + 0x6D2B79F5 | 0;
-    let t = Math.imul(a ^ a >>> 15, 1 | a);
-    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-    return ((t ^ t >>> 14) >>> 0) / 4294967296;
-  };
-}
-
 function median(values) {
   if (!values.length) return 0;
   const s = [...values].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)];
 }
 
-function historyTape(history, fallbackPrice) {
-  const rows = history?.length ? history.slice(-40) : [];
-  const last = rows[rows.length - 1];
-  const px = last?.close || fallbackPrice || 1;
-  if (rows.length < 3) {
-    const r = px * 0.012;
-    return { dailyStd: r, upWick: r * 0.22, dnWick: r * 0.22, gapFreq: 0.2, gapAbs: 0.0015 };
-  }
-  const rets = [];
-  const upWicks = [];
-  const dnWicks = [];
-  const gaps = [];
-  for (let i = 0; i < rows.length; i++) {
-    const c = rows[i];
-    const bodyHigh = Math.max(c.open, c.close);
-    const bodyLow = Math.min(c.open, c.close);
-    upWicks.push(Math.max(0, c.high - bodyHigh));
-    dnWicks.push(Math.max(0, bodyLow - c.low));
-    if (i > 0 && rows[i - 1].close) {
-      rets.push(c.close - rows[i - 1].close);
-      gaps.push((c.open - rows[i - 1].close) / rows[i - 1].close);
-    }
-  }
-  const mean = rets.reduce((s, v) => s + v, 0) / rets.length;
-  const variance = rets.reduce((s, v) => s + (v - mean) ** 2, 0) / rets.length;
-  const absGaps = gaps.map(g => Math.abs(g));
-  return {
-    dailyStd: Math.max(Math.sqrt(variance), px * 0.004),
-    upWick: Math.max(median(upWicks), px * 0.001),
-    dnWick: Math.max(median(dnWicks), px * 0.001),
-    gapFreq: Math.min(0.5, gaps.filter(g => Math.abs(g) > 0.0008).length / gaps.length),
-    gapAbs: Math.max(median(absGaps), 0.0008)
-  };
-}
-
-function bridgeCloses(start, end, steps, sigma, rng) {
-  if (steps <= 0) return [];
-  if (steps === 1) return [end];
-  const delta = end - start;
-  const dir = Math.sign(delta);
-  const out = [];
-  for (let i = 1; i <= steps; i++) {
-    const u = i / steps;
-    const ease = u * u * (3 - 2 * u);
-    const trend = start + delta * ease;
-    const bulge = Math.sin(Math.PI * u);
-    const noiseAmp = Math.max(Math.abs(delta) * 0.08, (sigma || 0) * 0.18) * bulge;
-    let p = trend + noiseAmp * (rng() * 2 - 1);
-    if (dir > 0) {
-      p = Math.min(Math.max(p, start + delta * u * 0.12), end + Math.abs(delta) * 0.03);
-    } else if (dir < 0) {
-      p = Math.max(Math.min(p, start + delta * u * 0.12), end - Math.abs(delta) * 0.03);
-    } else {
-      p = start + (sigma || 0) * 0.18 * (rng() * 2 - 1) * bulge;
-    }
-    out.push(p);
-  }
-  out[steps - 1] = end;
-  return out;
-}
-
-function forecastCloses(lastClose, anchors, tape, rng) {
-  const closes = [lastClose];
-  let price = lastClose;
-  let day = 0;
-  for (let i = 1; i < anchors.length; i++) {
-    const span = anchors[i].day - day;
-    if (span <= 0) continue;
-    const next = bridgeCloses(price, anchors[i].price, span, tape.dailyStd, rng);
-    for (const p of next) closes.push(p);
-    price = anchors[i].price;
-    day = anchors[i].day;
-  }
-  if (day < FORECAST_DAYS) {
-    const tail = bridgeCloses(price, price, FORECAST_DAYS - day, tape.dailyStd * 0.85, rng);
-    for (const p of tail) closes.push(p);
-  }
-  return closes.slice(0, FORECAST_DAYS + 1);
-}
-
-function sessionCandle(prevClose, close, tape, rng) {
-  const gap = rng() < tape.gapFreq ? (rng() * 2 - 1) * tape.gapAbs : 0;
-  const open = prevClose * (1 + gap);
-  const bodyHigh = Math.max(open, close);
-  const bodyLow = Math.min(open, close);
-  const up = tape.upWick * (0.3 + rng() * 1.5);
-  const dn = tape.dnWick * (0.3 + rng() * 1.5);
-  return {
-    open,
-    close,
-    high: bodyHigh + up,
-    low: Math.max(close * 0.2, bodyLow - dn)
-  };
-}
-
 function buildForecastCandles(lastCandle, targets, history, pred) {
   if (!lastCandle || !targets?.length) return { bars: [], turns: [] };
-  const currency = quote.value?.currency;
-  const anchors = forecastAnchors(lastCandle.close, targets, pred);
-  if (anchors.length < 2) return { bars: [], turns: [] };
-  const turns = labelForecastAnchors(anchors, pred, currency);
-  const tape = historyTape(history, lastCandle.close);
-  const rng = seedRng(props.symbol, lastCandle.close, targets);
-  const closes = forecastCloses(lastCandle.close, anchors, tape, rng);
-  const bars = [];
-  for (let day = 1; day < closes.length && day <= FORECAST_DAYS; day++) {
-    const candle = sessionCandle(closes[day - 1], closes[day], tape, rng);
-    bars.push({
-      time: tradingDaysAhead(lastCandle.time, day),
-      ...candle,
-      horizon: horizonAtDay(day),
-      day
-    });
-  }
-  return { bars, turns };
+  const { bars, anchors } = buildForecastPath({
+    lastCandle,
+    targets,
+    history,
+    pred,
+    symbol: props.symbol
+  });
+  if (!bars.length) return { bars: [], turns: [] };
+  const turns = labelForecastAnchors(anchors, pred, quote.value?.currency);
+  return {
+    bars: bars.map(bar => ({
+      ...bar,
+      time: tradingDaysAhead(lastCandle.time, bar.day)
+    })),
+    turns
+  };
 }
 
 function formatShortDate(dateStr) {
@@ -713,6 +528,37 @@ function articleSessionKey(iso) {
   return d.toISOString().slice(0, 10);
 }
 
+function resolveSession(key, byDay) {
+  if (!key) return '';
+  if (byDay.has(key)) return key;
+  const d = new Date(`${key}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return '';
+  d.setUTCDate(d.getUTCDate() - 1);
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d.setUTCDate(d.getUTCDate() - 1);
+  const prev = d.toISOString().slice(0, 10);
+  return byDay.has(prev) ? prev : '';
+}
+
+function candleDir(candle, prev) {
+  if (prev?.close) {
+    const ret = candle.close / prev.close - 1;
+    if (Math.abs(ret) >= 0.0005) return ret >= 0 ? 1 : -1;
+  }
+  return candle.close >= candle.open ? 1 : -1;
+}
+
+function newsArticlePool() {
+  const seen = new Set();
+  const out = [];
+  for (const a of [...(chartNewsArticles || []), ...(newsStore.stockArticles || [])]) {
+    const key = String(a?.url || a?.headline || a?.title || '').toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(a);
+  }
+  return out;
+}
+
 function newsEventLabel(article) {
   const ev = (article.events || []).sort((a, b) => Math.abs(b.impact || 0) - Math.abs(a.impact || 0))[0];
   if (ev?.id) {
@@ -740,11 +586,10 @@ function newsStrength(article) {
 
 function pickNewsMarks(candles) {
   if (!candles?.length) return [];
-  const articles = (newsStore.stockArticles || []).filter(a => {
+  const articles = newsArticlePool().filter(a => {
     const title = a.headline || a.title || '';
-    if (title.length < 16 || NEWS_NOISE.test(title)) return false;
-    if (!a.publishedAt) return false;
-    return newsStrength(a) >= 0.22 || (a.events || []).length > 0;
+    if (title.length < 12 || NEWS_NOISE.test(title)) return false;
+    return !!a.publishedAt;
   });
   if (!articles.length) return [];
 
@@ -754,25 +599,14 @@ function pickNewsMarks(candles) {
     if (key) byDay.set(key, { candle: candles[i], prev: candles[i - 1] || null });
   }
 
-  const absRets = [];
-  for (let i = 1; i < candles.length; i++) {
-    const prev = candles[i - 1].close;
-    if (prev) absRets.push(Math.abs(candles[i].close / prev - 1));
-  }
-  const typical = median(absRets) || 0.01;
-  const minMove = Math.max(0.008, typical * 0.8);
-
   const bestByDay = new Map();
   for (const article of articles) {
-    const key = articleSessionKey(article.publishedAt);
+    const key = resolveSession(articleSessionKey(article.publishedAt), byDay);
     const row = byDay.get(key);
-    if (!row?.prev?.close) continue;
-    const ret = row.candle.close / row.prev.close - 1;
-    if (Math.abs(ret) < minMove) continue;
+    if (!row) continue;
+    const dir = candleDir(row.candle, row.prev);
     const tone = newsTone(article);
-    const dir = ret >= 0 ? 1 : -1;
-    if (tone && tone !== dir) continue;
-    const score = newsStrength(article) * (0.6 + Math.min(2.5, Math.abs(ret) / typical));
+    const score = newsStrength(article) + (tone === dir ? 0.5 : 0);
     const cur = bestByDay.get(key);
     if (cur && cur.score >= score) continue;
     const event = newsEventLabel(article);
@@ -789,9 +623,7 @@ function pickNewsMarks(candles) {
     });
   }
 
-  return [...bestByDay.values()]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
+  return [...bestByDay.values()].sort((a, b) => candleDateKey(a.time).localeCompare(candleDateKey(b.time)));
 }
 
 function rebuildNewsMarks(candles, isIntraday) {
@@ -1122,22 +954,37 @@ function paintForecastOverlay() {
   }
 
   const placed = [];
+  const newsSpacing = chartBarSpacing();
   newsMarks.forEach((mark) => {
     const x = ts.timeToCoordinate(mark.time);
     const y = candleSeries.priceToCoordinate(mark.price);
     if (x == null || y == null) return;
+    if (x < -10 || x > w + 10) return;
     const color = mark.dir > 0 ? '#00d488' : '#ff4d4d';
     const tag = mark.event || (mark.dir > 0 ? t('chart.pumpedTag') : t('chart.dumpedTag'));
     const why = mark.title && mark.title !== mark.event ? mark.title : '';
-    const lines = [...(tag ? [tag] : []), ...wrapWhy(why, 24)].filter(Boolean);
-    const lineH = 11;
-    const padX = 6;
-    const padY = 4;
-    const boxW = Math.min(168, Math.max(72, ...lines.map(l => l.length * 6.15 + padX * 2)));
+    const compact = newsSpacing < 11;
+    const lines = compact
+      ? [tag].filter(Boolean)
+      : [...(tag ? [tag] : []), ...wrapWhy(why, 24)].filter(Boolean);
+    const lineH = compact ? 10 : 11;
+    const padX = compact ? 4 : 6;
+    const padY = compact ? 3 : 4;
+    const boxW = Math.min(compact ? 120 : 168, Math.max(56, ...lines.map(l => l.length * 6.15 + padX * 2)));
     const boxH = lines.length * lineH + padY * 2;
-    const placedAt = placeCallout({
+    const pipY = mark.dir > 0 ? y - 6 : y + 6;
+    const pip = mark.dir > 0
+      ? `<polygon points="${x},${y - 1} ${x + 3.6},${y - 8} ${x - 3.6},${y - 8}" fill="${color}" />`
+      : `<polygon points="${x},${y + 1} ${x + 3.6},${y + 8} ${x - 3.6},${y + 8}" fill="${color}" />`;
+    const href = (() => {
+      try {
+        const u = new URL(String(mark.url || '').trim());
+        return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : '';
+      } catch { return ''; }
+    })();
+    const placedAt = lines.length ? placeCallout({
       anchorX: x,
-      anchorY: y,
+      anchorY: pipY,
       boxW,
       boxH,
       preferAbove: mark.dir > 0,
@@ -1145,27 +992,23 @@ function paintForecastOverlay() {
       placed,
       w,
       h
-    });
-    if (!placedAt) return;
-    const box = placedAt.box;
-    placed.push(box);
-    obstacles.push({ ...box });
-    const tipX = Math.max(box.x + 8, Math.min(x, box.x + box.w - 8));
-    const tipY = (box.y + box.h <= y) ? box.y + box.h : box.y;
-    const href = (() => {
-      try {
-        const u = new URL(String(mark.url || '').trim());
-        return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : '';
-      } catch { return ''; }
-    })();
-    const body = [
-      `<line x1="${x}" y1="${y}" x2="${tipX}" y2="${tipY}" stroke="${color}" stroke-opacity="0.45" stroke-width="1" />`,
-      `<polygon points="${x},${y - 5} ${x + 4.5},${y + 3.5} ${x - 4.5},${y + 3.5}" fill="${color}" />`,
-      `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="rgba(13,17,23,0.92)" stroke="${color}" stroke-opacity="0.55" />`,
-      ...lines.map((line, i) => (
-        `<text x="${box.x + padX}" y="${box.y + padY + (i + 0.78) * lineH}" fill="${i === 0 ? color : '#c9d1d9'}" font-size="10" font-family="JetBrains Mono, monospace">${escapeXml(line)}</text>`
-      ))
-    ].join('');
+    }) : null;
+    let body = pip;
+    if (placedAt) {
+      const box = placedAt.box;
+      placed.push(box);
+      obstacles.push({ ...box });
+      const tipX = Math.max(box.x + 8, Math.min(x, box.x + box.w - 8));
+      const tipY = (box.y + box.h <= y) ? box.y + box.h : box.y;
+      body = [
+        `<line x1="${x}" y1="${pipY}" x2="${tipX}" y2="${tipY}" stroke="${color}" stroke-opacity="0.45" stroke-width="1" />`,
+        pip,
+        `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="rgba(13,17,23,0.92)" stroke="${color}" stroke-opacity="0.55" />`,
+        ...lines.map((line, i) => (
+          `<text x="${box.x + padX}" y="${box.y + padY + (i + 0.78) * lineH}" fill="${i === 0 ? color : '#c9d1d9'}" font-size="10" font-family="JetBrains Mono, monospace">${escapeXml(line)}</text>`
+        ))
+      ].join('');
+    }
     parts.push(href
       ? `<a href="${escapeXml(href)}" target="_blank" rel="noopener noreferrer" style="pointer-events:auto">${body}</a>`
       : body
@@ -1383,12 +1226,32 @@ onMounted(async () => {
   ro.observe(chartContainer.value);
 });
 
+async function loadChartNews(symbol) {
+  const sym = String(symbol || '').toUpperCase();
+  if (!sym) {
+    chartNewsArticles = [];
+    return;
+  }
+  try {
+    const res = await newsApi.stockHistory(sym, marketStore.selectedQuote?.name, 400);
+    chartNewsArticles = res.data?.data || [];
+  } catch {
+    chartNewsArticles = [];
+  }
+  if (!chart || !candleSeries) return;
+  const { candles, isIntraday } = mappedCandles();
+  rebuildNewsMarks(candles, isIntraday);
+  paintForecastOverlay();
+}
+
 watch(() => props.symbol, async (sym) => {
   if (!sym) return;
   loadGeneration++;
   clearAutoRetry();
   retryAttempt.value = 0;
+  chartNewsArticles = [];
   newsStore.fetchStockNews(sym, marketStore.selectedQuote?.name);
+  loadChartNews(sym);
   await loadTimeframe(activeTimeframe());
   if (chart && candleSeries) renderData();
 }, { immediate: true });
