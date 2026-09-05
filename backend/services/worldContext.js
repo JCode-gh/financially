@@ -1,5 +1,6 @@
 import { getCompanyProfile, getBasicFinancials, getInsiderTransactions, getFilings } from './finnhub.js';
 import { getYahooDeskFundamentals, getYahooOptionsSnapshot } from './yahooFinance.js';
+import { getSecDeskData } from './secEdgar.js';
 import { getMarketRegime } from '../models/marketRegime.js';
 import { createTtlCache } from '../lib/cache.js';
 import { webSearch } from './webSearch.js';
@@ -104,10 +105,20 @@ function searchQueries(ticker, name, profile, notes, lang) {
   return [...new Set(queries.filter(Boolean))].slice(0, 3);
 }
 
+function peFromQuote(quote) {
+  if (!quote) return null;
+  if (quote.pe != null && Number.isFinite(Number(quote.pe))) return Number(quote.pe);
+  if (quote.price && quote.eps) {
+    const pe = Number(quote.price) / Number(quote.eps);
+    return Number.isFinite(pe) && pe > 0 && pe < 500 ? pe : null;
+  }
+  return null;
+}
+
 function mergeFinancials(fh, yh, quote) {
   const deRaw = num(fh?.debtToEquity, yh?.debtToEquity);
   return {
-    peRatioTTM: num(fh?.peRatioTTM, yh?.peRatioTTM, quote?.pe),
+    peRatioTTM: num(fh?.peRatioTTM, yh?.peRatioTTM, peFromQuote(quote)),
     forwardPE: num(yh?.forwardPE, fh?.forwardPE),
     priceToBook: num(fh?.priceToBook, yh?.priceToBook),
     epsGrowth: num(fh?.epsGrowth, yh?.epsGrowth),
@@ -136,7 +147,7 @@ function mergeProfile(fh, yh, ticker, quote, lang) {
 }
 
 function summarizeInsider(rows) {
-  const list = (rows || []).filter(r => r && (r.shares || r.name));
+  const list = (rows || []).filter(r => r && (r.shares || r.name || r.code));
   if (!list.length) return null;
   const buys = list.filter(r => r.shares > 0 || r.code === 'P');
   const sells = list.filter(r => r.shares < 0 || r.code === 'S');
@@ -145,11 +156,12 @@ function summarizeInsider(rows) {
     buys: buys.length,
     sells: sells.length,
     netShares,
+    form4: list.filter(r => r.code === '4').length,
     recent: list.slice(0, 8).map(r => ({
       name: r.name,
       shares: r.shares,
       date: r.date,
-      side: r.shares < 0 || r.code === 'S' ? 'sell' : 'buy'
+      side: r.shares < 0 || r.code === 'S' ? 'sell' : r.code === '4' ? 'file' : 'buy'
     }))
   };
 }
@@ -195,16 +207,17 @@ export function attachQuoteFallbacks(world, quote, ticker, lang = 'en') {
 }
 
 export async function loadWorldContext(ticker, name, { notes = '', lang = 'en' } = {}) {
-  const key = `world_${ticker}_${lang}_${clip(notes, 40)}`;
+  const key = `world_v3_${ticker}_${lang}_${clip(notes, 40)}`;
   return cached(key, 6 * 60_000, async () => {
-    const [profile, regime, financials, insiderFh, filingsFh, yahoo, options] = await Promise.all([
+    const [profile, regime, financials, insiderFh, filingsFh, yahoo, options, sec] = await Promise.all([
       getCompanyProfile(ticker).catch(() => null),
       getMarketRegime().catch(() => null),
       getBasicFinancials(ticker).catch(() => null),
       getInsiderTransactions(ticker).catch(() => null),
       getFilings(ticker).catch(() => null),
       getYahooDeskFundamentals(ticker).catch(() => null),
-      getYahooOptionsSnapshot(ticker).catch(() => null)
+      getYahooOptionsSnapshot(ticker).catch(() => null),
+      getSecDeskData(ticker).catch(() => null)
     ]);
     const mergedProfile = mergeProfile(profile, yahoo?.profile, ticker, null, lang);
     const resolvedName = name || mergedProfile?.name || ticker;
@@ -216,8 +229,8 @@ export async function loadWorldContext(ticker, name, { notes = '', lang = 'en' }
       profile: mergedProfile,
       regime: regime || null,
       financials: mergeFinancials(financials, yahoo?.financials, null),
-      insider: summarizeInsider([...(insiderFh || []), ...(yahoo?.insider || [])]),
-      filings: pickFilings(filingsFh, yahoo?.filings),
+      insider: summarizeInsider([...(insiderFh || []), ...(yahoo?.insider || []), ...(sec?.insider || [])]),
+      filings: pickFilings([...(filingsFh || []), ...(yahoo?.filings || []), ...(sec?.filings || [])]),
       options: options || null,
       hits: dedupeHits(batches.flat()).slice(0, 8),
       queries

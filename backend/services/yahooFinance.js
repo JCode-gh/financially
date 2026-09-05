@@ -2,6 +2,7 @@ import axios from 'axios';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -181,6 +182,12 @@ async function fetchIntlQuotes(symbols) {
 
 // Primary: v7 bulk quote (needs crumb)
 async function quoteBulk(symbols) {
+  const qs = encodeURIComponent(symbols.join(','));
+  for (const base of [BASE1, BASE2]) {
+    const data = await yahooJson(`${base}/v7/finance/quote?symbols=${qs}`);
+    const rows = data?.quoteResponse?.result;
+    if (rows?.length) return rows;
+  }
   await ensureSession();
   if (!session.crumb) return null;
   try {
@@ -202,7 +209,7 @@ function chartUrl(base, symbol, params) {
   return `${base}/v8/finance/chart/${encodeURIComponent(symbol)}?${qs}`;
 }
 
-const CURL_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+const CURL_UA = UA;
 
 // Yahoo often 429s Node.js HTTP clients; argv curl works on Windows and Unix
 // (shell single-quotes break under cmd.exe).
@@ -398,22 +405,35 @@ export async function getMarketOverview() {
   });
 }
 
+async function attachQuotePe(quote, symbol) {
+  if (!quote || quote.pe != null) return quote;
+  const bulk = await quoteBulk([symbol]);
+  const q = bulk?.[0];
+  if (!q) return quote;
+  return {
+    ...quote,
+    pe: q.trailingPE ?? quote.pe,
+    eps: q.epsTrailingTwelveMonths ?? quote.eps,
+    marketCap: quote.marketCap ?? q.marketCap
+  };
+}
+
 export async function getQuote(symbol) {
   return cached(`quote_${symbol}`, 60_000, async () => {
     if (isInternationalTicker(symbol)) {
       const disk = quoteFromDisk(symbol, { maxAgeMs: DISK_QUOTE_FRESH_MS });
-      if (disk) return disk;
+      if (disk?.price) return attachQuotePe(disk, symbol);
       const intl = await quoteViaChart(symbol);
-      if (intl) return intl;
+      if (intl) return attachQuotePe(intl, symbol);
       const stale = quoteFromDisk(symbol);
-      if (stale) return stale;
+      if (stale) return attachQuotePe(stale, symbol);
     }
 
     const bulk = await quoteBulk([symbol]);
     if (bulk?.[0]) return fromV7Quote(bulk[0]);
 
     const chart = await quoteViaChart(symbol);
-    if (chart) return chart;
+    if (chart) return attachQuotePe(chart, symbol);
     return quoteFromDisk(symbol);
   });
 }
@@ -543,9 +563,109 @@ function ydate(v) {
   return Number.isNaN(d.getTime()) ? '' : d.toISOString().split('T')[0];
 }
 
+const CURL_BINS = process.platform === 'win32'
+  ? ['curl.exe', 'curl']
+  : ['curl', '/usr/bin/curl', '/nix/var/nix/profiles/default/bin/curl'];
+
+async function runCurl(args) {
+  for (const bin of CURL_BINS) {
+    try {
+      const { stdout } = await execFileAsync(bin, args, {
+        maxBuffer: 12 * 1024 * 1024,
+        windowsHide: true
+      });
+      return String(stdout || '').trim();
+    } catch (e) {
+      const out = String(e.stdout || '').trim();
+      if (out) return out;
+    }
+  }
+  return '';
+}
+
+let curlAuth = { crumb: '', jar: '', ts: 0 };
+let curlAuthInflight = null;
+const CURL_AUTH_TTL = 50 * 60_000;
+
+function yahooErrorPayload(data) {
+  return data?.finance?.error || data?.quoteSummary?.error || data?.optionChain?.error || null;
+}
+
+function isCrumbError(err) {
+  return /crumb|unauthor/i.test(JSON.stringify(err || ''));
+}
+
+async function refreshYahooCurlAuth() {
+  const jar = path.join(os.tmpdir(), `financially-yahoo-${process.pid}.jar`);
+  try { fs.unlinkSync(jar); } catch { /* fresh jar */ }
+  await runCurl(['-s', '-L', '--max-time', '12', '-c', jar, '-b', jar, '-H', `User-Agent: ${CURL_UA}`, 'https://fc.yahoo.com']);
+  const crumb = await runCurl([
+    '-s', '-L', '--max-time', '8', '-c', jar, '-b', jar,
+    '-H', `User-Agent: ${CURL_UA}`,
+    `${BASE1}/v1/test/getcrumb`
+  ]);
+  if (!crumb || crumb.startsWith('{') || crumb.startsWith('<') || /unauthorized|invalid/i.test(crumb)) {
+    curlAuth = { crumb: '', jar: '', ts: 0 };
+    return curlAuth;
+  }
+  curlAuth = { crumb, jar, ts: Date.now() };
+  return curlAuth;
+}
+
+async function ensureYahooCurlAuth() {
+  if (curlAuth.crumb && Date.now() - curlAuth.ts < CURL_AUTH_TTL && fs.existsSync(curlAuth.jar)) {
+    return curlAuth;
+  }
+  if (curlAuthInflight) return curlAuthInflight;
+  curlAuthInflight = refreshYahooCurlAuth().finally(() => { curlAuthInflight = null; });
+  return curlAuthInflight;
+}
+
+async function curlYahooOnce(url) {
+  const auth = await ensureYahooCurlAuth();
+  let target = url;
+  if (auth.crumb) {
+    const u = new URL(url);
+    u.searchParams.set('crumb', auth.crumb);
+    target = u.toString();
+  } else {
+    return null;
+  }
+  const args = [
+    '-s', '-L', '--max-time', '14',
+    '-c', auth.jar, '-b', auth.jar,
+    '-H', `User-Agent: ${CURL_UA}`,
+    '-H', 'Referer: https://finance.yahoo.com/',
+    target
+  ];
+  const text = await runCurl(args);
+  if (!text || text.startsWith('Too Many')) return { error: true, crumb: false };
+  try {
+    const data = JSON.parse(text);
+    const err = yahooErrorPayload(data);
+    if (err) return { error: true, crumb: isCrumbError(err) };
+    return { data };
+  } catch {
+    return { error: true, crumb: false };
+  }
+}
+
+async function curlYahooAuthed(url) {
+  let first = await curlYahooOnce(url);
+  if (first?.data) return first.data;
+  if (first?.crumb) {
+    curlAuth = { crumb: '', jar: '', ts: 0 };
+    const retry = await curlYahooOnce(url);
+    if (retry?.data) return retry.data;
+  }
+  return null;
+}
+
 async function yahooJson(url) {
+  const authed = await curlYahooAuthed(url);
+  if (authed) return authed;
   const viaCurl = await curlYahooJson(url);
-  if (viaCurl) return viaCurl;
+  if (viaCurl && !viaCurl?.finance?.error) return viaCurl;
   await ensureSession();
   const headers = {
     'User-Agent': UA,
@@ -554,42 +674,57 @@ async function yahooJson(url) {
   };
   if (session.cookie) headers.Cookie = session.cookie;
   try {
-    const res = await http.get(url, { headers, timeout: 10000 });
+    const u = new URL(url);
+    if (session.crumb && !u.searchParams.has('crumb')) u.searchParams.set('crumb', session.crumb);
+    const res = await http.get(u.toString(), { headers, timeout: 10000 });
     return res.data;
   } catch {
     return null;
   }
 }
 
-function quoteSummaryUrl(base, symbol, modules, crumb) {
+function quoteSummaryUrl(base, symbol, modules) {
   const qs = new URLSearchParams({ modules: modules.join(',') });
-  if (crumb) qs.set('crumb', crumb);
   return `${base}/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?${qs}`;
+}
+
+async function fetchQuoteSummary(symbol, modules) {
+  for (const base of [BASE1, BASE2]) {
+    const data = await yahooJson(quoteSummaryUrl(base, symbol, modules));
+    if (data?.quoteSummary?.result?.[0]) return data.quoteSummary.result[0];
+  }
+  return null;
 }
 
 export async function getYahooDeskFundamentals(symbol) {
   return cached(`yh_fund_${symbol}`, 3600_000, async () => {
-    await ensureSession();
-    const modules = [
+    const allModules = [
       'summaryProfile',
+      'summaryDetail',
       'defaultKeyStatistics',
       'financialData',
       'insiderTransactions',
       'secFilings'
     ];
-    let data = null;
-    for (const base of [BASE1, BASE2]) {
-      data = await yahooJson(quoteSummaryUrl(base, symbol, modules, session.crumb));
-      if (data?.quoteSummary?.result?.[0]) break;
+    let row = await fetchQuoteSummary(symbol, allModules);
+    if (!row) {
+      const core = await fetchQuoteSummary(symbol, ['summaryProfile', 'summaryDetail', 'defaultKeyStatistics', 'financialData']);
+      const extra = await fetchQuoteSummary(symbol, ['insiderTransactions', 'secFilings']);
+      if (!core && !extra) return null;
+      row = { ...(core || {}), ...(extra || {}) };
     }
-    const row = data?.quoteSummary?.result?.[0];
-    if (!row) return null;
+    if (!row || (!row.summaryDetail && !row.defaultKeyStatistics && !row.financialData && !row.summaryProfile)) return null;
 
     const profile = row.summaryProfile || {};
+    const detail = row.summaryDetail || {};
     const stats = row.defaultKeyStatistics || {};
     const fin = row.financialData || {};
     const tx = row.insiderTransactions?.transactions || [];
     const filings = row.secFilings?.filings || [];
+    const price = yraw(fin.currentPrice) ?? yraw(detail.regularMarketPrice);
+    const eps = yraw(stats.trailingEps);
+    const pe = yraw(detail.trailingPE) ?? yraw(stats.trailingPE) ?? yraw(fin.trailingPE)
+      ?? (price && eps ? price / eps : null);
 
     return {
       profile: {
@@ -600,8 +735,8 @@ export async function getYahooDeskFundamentals(symbol) {
         exchange: ''
       },
       financials: {
-        peRatioTTM: yraw(stats.trailingPE) ?? yraw(fin.trailingPE),
-        forwardPE: yraw(stats.forwardPE) ?? yraw(fin.forwardPE),
+        peRatioTTM: pe,
+        forwardPE: yraw(detail.forwardPE) ?? yraw(stats.forwardPE) ?? yraw(fin.forwardPE),
         priceToBook: yraw(stats.priceToBook),
         epsGrowth: yraw(fin.earningsGrowth),
         revenueGrowth: yraw(fin.revenueGrowth),

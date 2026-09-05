@@ -266,8 +266,8 @@
         <li v-for="(row, i) in insiderTrades" :key="i" class="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
           <span
             class="font-mono text-xs uppercase"
-            :class="row.side === 'sell' ? 'text-bear' : 'text-bull'"
-          >{{ row.side === 'sell' ? $t('detail.insiderSell') : $t('detail.insiderBuy') }}</span>
+            :class="row.side === 'sell' ? 'text-bear' : row.side === 'file' ? 'text-gray-400' : 'text-bull'"
+          >{{ row.side === 'sell' ? $t('detail.insiderSell') : row.side === 'file' ? $t('detail.filings') : $t('detail.insiderBuy') }}</span>
           <span class="text-gray-200">{{ row.name }}</span>
           <span v-if="row.shares" class="font-mono text-gray-400">{{ formatCompact(Math.abs(row.shares)) }}</span>
           <span v-if="row.date" class="font-mono text-[11px] text-gray-600">{{ row.date }}</span>

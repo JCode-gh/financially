@@ -400,7 +400,7 @@ export async function generateForTicker(ticker, name, { force, lang = 'en', styl
   const locale = lang === 'nl' ? 'nl' : 'en';
   const briefStyle = normalizeStyle(style);
   const briefNotes = clipNotes(notes);
-  const key = `desk_${ticker}_${locale}_v19_${briefCacheTag(briefStyle, briefNotes)}`;
+  const key = `desk_${ticker}_${locale}_v21_${briefCacheTag(briefStyle, briefNotes)}`;
   if (force) genCache.cache.delete(key);
 
   if (onEvent) {
@@ -540,7 +540,7 @@ export function getPredictionHistory({ ticker, horizon, limit = 50, resolved } =
 
 export function peekDeskCall(ticker, lang = 'en') {
   const locale = lang === 'nl' ? 'nl' : 'en';
-  const key = `desk_${String(ticker || '').toUpperCase()}_${locale}_v19_${briefCacheTag('desk', '')}`;
+  const key = `desk_${String(ticker || '').toUpperCase()}_${locale}_v21_${briefCacheTag('desk', '')}`;
   return genCache.cache.get(key)?.data || null;
 }
 

@@ -66,9 +66,14 @@ function profileLine(profile, lang) {
 function insiderLine(insider, lang) {
   if (!insider) return null;
   const nl = lang === 'nl';
-  const net = insider.netShares || 0;
-  const dir = net > 0 ? (nl ? 'netto koop' : 'net buying') : net < 0 ? (nl ? 'netto verkoop' : 'net selling') : (nl ? 'neutraal' : 'flat');
-  return `${dir} · ${insider.buys} ${nl ? 'koop' : 'buys'} / ${insider.sells} ${nl ? 'verkoop' : 'sells'}`;
+  if (insider.buys || insider.sells) {
+    const net = insider.netShares || 0;
+    const dir = net > 0 ? (nl ? 'netto koop' : 'net buying') : net < 0 ? (nl ? 'netto verkoop' : 'net selling') : (nl ? 'neutraal' : 'flat');
+    return `${dir} · ${insider.buys} ${nl ? 'koop' : 'buys'} / ${insider.sells} ${nl ? 'verkoop' : 'sells'}`;
+  }
+  const n = insider.form4 || insider.recent?.length || 0;
+  if (!n) return null;
+  return nl ? `${n} Form-4 in 90 dagen` : `${n} Form 4 filings in 90 days`;
 }
 
 function filingsLine(filings) {
