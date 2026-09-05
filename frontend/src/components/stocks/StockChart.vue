@@ -119,8 +119,9 @@ import { createChart, CrosshairMode, ColorType } from 'lightweight-charts';
 import { useMarketStore } from '../../stores/marketStore.js';
 import { usePredictionStore } from '../../stores/predictionStore.js';
 import { formatPrice, formatPct } from '../../utils/format.js';
-import { setupReason } from '../../utils/picks.js';
+import { setupReason, shortSentence } from '../../utils/picks.js';
 import { currentLocale, t } from '../../i18n/index.js';
+import { useNewsStore } from '../../stores/newsStore.js';
 
 const props = defineProps({
   symbol: String,
@@ -130,6 +131,7 @@ const props = defineProps({
 
 const marketStore = useMarketStore();
 const predictionStore = usePredictionStore();
+const newsStore = useNewsStore();
 
 const quote = computed(() =>
   marketStore.selectedQuote?.symbol === props.symbol ? marketStore.selectedQuote : null
@@ -159,6 +161,7 @@ let loadGeneration = 0;
 let forecastBars = [];
 let forecastTurns = [];
 let forecastLevels = { support: null, resistance: null };
+let newsMarks = [];
 
 const HORIZON_DAYS = { '1d': 1, '5d': 5, '30d': 30 };
 const FORECAST_DAYS = 30;
@@ -690,6 +693,111 @@ function predictionTargets() {
   return pred.predictions.filter(p => p.targetPrice);
 }
 
+const NEWS_NOISE = /\b(stocks to watch|top (gainers|losers|picks)|market (wrap|recap|today)|what to (know|watch)|best stocks|week ahead|premarket|after hours)\b/i;
+
+function candleDateKey(time) {
+  if (isBusinessDay(time)) {
+    const m = String(time.month).padStart(2, '0');
+    const d = String(time.day).padStart(2, '0');
+    return `${time.year}-${m}-${d}`;
+  }
+  if (time == null) return '';
+  return new Date(time * 1000).toISOString().slice(0, 10);
+}
+
+function articleSessionKey(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  if (d.getUTCHours() >= 21) d.setUTCDate(d.getUTCDate() + 1);
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function newsEventLabel(article) {
+  const ev = (article.events || []).sort((a, b) => Math.abs(b.impact || 0) - Math.abs(a.impact || 0))[0];
+  if (ev?.id) {
+    const key = `picks.events.${ev.id}`;
+    const label = t(key);
+    if (label && label !== key) return label;
+  }
+  return ev?.label || '';
+}
+
+function newsTone(article) {
+  const ev = (article.events || []).reduce((s, e) => s + (Number(e.impact) || 0), 0);
+  const sent = Number(article.sentiment?.score || 0);
+  const raw = ev || sent;
+  if (raw > 0.12) return 1;
+  if (raw < -0.12) return -1;
+  return 0;
+}
+
+function newsStrength(article) {
+  const ev = (article.events || []).reduce((s, e) => s + Math.abs(Number(e.impact) || 0), 0);
+  const sent = Math.abs(Number(article.sentiment?.score || 0));
+  return ev * 1.4 + sent;
+}
+
+function pickNewsMarks(candles) {
+  if (!candles?.length) return [];
+  const articles = (newsStore.stockArticles || []).filter(a => {
+    const title = a.headline || a.title || '';
+    if (title.length < 16 || NEWS_NOISE.test(title)) return false;
+    if (!a.publishedAt) return false;
+    return newsStrength(a) >= 0.22 || (a.events || []).length > 0;
+  });
+  if (!articles.length) return [];
+
+  const byDay = new Map();
+  for (let i = 0; i < candles.length; i++) {
+    const key = candleDateKey(candles[i].time);
+    if (key) byDay.set(key, { candle: candles[i], prev: candles[i - 1] || null });
+  }
+
+  const absRets = [];
+  for (let i = 1; i < candles.length; i++) {
+    const prev = candles[i - 1].close;
+    if (prev) absRets.push(Math.abs(candles[i].close / prev - 1));
+  }
+  const typical = median(absRets) || 0.01;
+  const minMove = Math.max(0.008, typical * 0.8);
+
+  const bestByDay = new Map();
+  for (const article of articles) {
+    const key = articleSessionKey(article.publishedAt);
+    const row = byDay.get(key);
+    if (!row?.prev?.close) continue;
+    const ret = row.candle.close / row.prev.close - 1;
+    if (Math.abs(ret) < minMove) continue;
+    const tone = newsTone(article);
+    const dir = ret >= 0 ? 1 : -1;
+    if (tone && tone !== dir) continue;
+    const score = newsStrength(article) * (0.6 + Math.min(2.5, Math.abs(ret) / typical));
+    const cur = bestByDay.get(key);
+    if (cur && cur.score >= score) continue;
+    const event = newsEventLabel(article);
+    const title = shortSentence(article.headline || article.title || '', 46);
+    bestByDay.set(key, {
+      time: row.candle.time,
+      price: dir > 0 ? row.candle.high : row.candle.low,
+      dir,
+      score,
+      event,
+      title,
+      url: article.url || article.link || '',
+      why: event || title
+    });
+  }
+
+  return [...bestByDay.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+function rebuildNewsMarks(candles, isIntraday) {
+  newsMarks = isIntraday ? [] : pickNewsMarks(candles);
+}
+
 function applyScaleForForecast(bars) {
   if (!candleSeries) return;
   const extras = (bars || []).flatMap(c => [c.high, c.low]).filter(n => n != null);
@@ -699,7 +807,11 @@ function applyScaleForForecast(bars) {
   for (const p of [forecastLevels.support, forecastLevels.resistance]) {
     if (p != null) extras.push(p);
   }
-  if (!extras.length) {
+  for (const m of newsMarks) {
+    if (m.price != null) extras.push(m.price);
+  }
+  const labeled = forecastTurns.length || newsMarks.length;
+  if (!extras.length && !labeled) {
     candleSeries.applyOptions({ autoscaleInfoProvider: (original) => original() });
     return;
   }
@@ -714,8 +826,8 @@ function applyScaleForForecast(bars) {
         if (p > max) max = p;
       }
       const span = Math.max(max - min, 1);
-      const topPad = forecastTurns.length ? 0.48 : 0.16;
-      const botPad = forecastTurns.length ? 0.22 : 0.08;
+      const topPad = labeled ? 0.48 : 0.16;
+      const botPad = labeled ? 0.22 : 0.08;
       return { priceRange: { minValue: min - span * botPad, maxValue: max + span * topPad } };
     }
   });
@@ -868,49 +980,27 @@ function paintForecastOverlay() {
   svg.setAttribute('width', String(Math.max(w, 1)));
   svg.setAttribute('height', String(Math.max(h, 1)));
 
-  if (!chart || !candleSeries || !forecastBars.length || !lastBar || w <= 0 || h <= 0) {
+  if (!chart || !candleSeries || w <= 0 || h <= 0) {
+    svg.innerHTML = '';
+    return;
+  }
+  if (!forecastBars.length && !newsMarks.length) {
     svg.innerHTML = '';
     return;
   }
 
   const ts = chart.timeScale();
-  const lastX = ts.timeToCoordinate(lastBar.time);
-  if (lastX == null) {
-    svg.innerHTML = '';
-    return;
-  }
-
-  const lastLogical = ts.coordinateToLogical(lastX);
-  if (lastLogical == null) {
-    svg.innerHTML = '';
-    return;
-  }
+  const lastX = lastBar ? ts.timeToCoordinate(lastBar.time) : null;
+  const lastLogical = lastX != null ? ts.coordinateToLogical(lastX) : null;
 
   const spacing = chartBarSpacing();
   const candleW = Math.max(1, spacing * 0.8);
   const strokeW = spacing >= 8 ? 1.25 : spacing >= 4 ? 1 : 0.7;
   const fontPx = spacing >= 10 ? 10 : spacing >= 6 ? 9 : 0;
   const labelGap = Math.max(3, spacing * 0.4);
-  const dividerX = lastX + spacing * 0.5;
-  const parts = [
-    `<line x1="${dividerX}" y1="8" x2="${dividerX}" y2="${h - 22}" stroke="rgba(139,148,158,0.35)" stroke-dasharray="3 3" stroke-width="1" />`
-  ];
-
-  const pathPrices = [lastBar.close, ...forecastBars.flatMap(b => [b.high, b.low])].filter(n => n != null);
-  const pathMin = Math.min(...pathPrices);
-  const pathMax = Math.max(...pathPrices);
-  const pathPad = Math.max((pathMax - pathMin) * 0.2, (lastBar.close || 1) * 0.01);
-  const ySupport = forecastLevels.support != null
-    && forecastLevels.support >= pathMin - pathPad
-    && forecastLevels.support <= pathMax + pathPad
-    ? candleSeries.priceToCoordinate(forecastLevels.support)
-    : null;
-  const yResist = forecastLevels.resistance != null
-    && forecastLevels.resistance >= pathMin - pathPad
-    && forecastLevels.resistance <= pathMax + pathPad
-    ? candleSeries.priceToCoordinate(forecastLevels.resistance)
-    : null;
-  const guideEnd = Math.max(dividerX + 24, w - 10);
+  const hasForecast = !!(forecastBars.length && lastBar && lastX != null && lastLogical != null);
+  const dividerX = hasForecast ? lastX + spacing * 0.5 : null;
+  const parts = [];
 
   const obstacles = [];
   for (const c of mappedCandles().candles || []) {
@@ -922,94 +1012,166 @@ function paintForecastOverlay() {
     );
     if (o) obstacles.push(o);
   }
-  forecastBars.forEach((bar, i) => {
-    const o = candleObstacle(
-      ts.logicalToCoordinate(lastLogical + 1 + i),
-      candleSeries.priceToCoordinate(bar.high),
-      candleSeries.priceToCoordinate(bar.low),
-      candleW
-    );
-    if (o) obstacles.push(o);
-  });
 
-  const levelLabel = (text, y, color, below) => {
-    const approxW = text.length * 5.6 + 8;
-    const boxH = 12;
-    const bx = Math.max(4, guideEnd - approxW);
-    const rawY = below ? y + 4 : y - boxH - 2;
-    const box = { x: bx, y: rawY, w: approxW, h: boxH };
-    if (hitsForbidden(box, obstacles, [], 6)) {
-      const env = envelopeForSpan(bx, approxW, obstacles);
-      if (env.hit) {
-        const up = env.top - 4 - boxH;
-        const dn = env.bottom + 4;
-        box.y = (up >= 4 && !hitsForbidden({ ...box, y: up }, obstacles, [], 6))
-          ? up
-          : Math.min(h - 26, dn);
+  if (hasForecast) {
+    parts.push(
+      `<line x1="${dividerX}" y1="8" x2="${dividerX}" y2="${h - 22}" stroke="rgba(139,148,158,0.35)" stroke-dasharray="3 3" stroke-width="1" />`
+    );
+    forecastBars.forEach((bar, i) => {
+      const o = candleObstacle(
+        ts.logicalToCoordinate(lastLogical + 1 + i),
+        candleSeries.priceToCoordinate(bar.high),
+        candleSeries.priceToCoordinate(bar.low),
+        candleW
+      );
+      if (o) obstacles.push(o);
+    });
+
+    const pathPrices = [lastBar.close, ...forecastBars.flatMap(b => [b.high, b.low])].filter(n => n != null);
+    const pathMin = Math.min(...pathPrices);
+    const pathMax = Math.max(...pathPrices);
+    const pathPad = Math.max((pathMax - pathMin) * 0.2, (lastBar.close || 1) * 0.01);
+    const ySupport = forecastLevels.support != null
+      && forecastLevels.support >= pathMin - pathPad
+      && forecastLevels.support <= pathMax + pathPad
+      ? candleSeries.priceToCoordinate(forecastLevels.support)
+      : null;
+    const yResist = forecastLevels.resistance != null
+      && forecastLevels.resistance >= pathMin - pathPad
+      && forecastLevels.resistance <= pathMax + pathPad
+      ? candleSeries.priceToCoordinate(forecastLevels.resistance)
+      : null;
+    const guideEnd = Math.max(dividerX + 24, w - 10);
+
+    const levelLabel = (text, y, color, below) => {
+      const approxW = text.length * 5.6 + 8;
+      const boxH = 12;
+      const bx = Math.max(4, guideEnd - approxW);
+      const rawY = below ? y + 4 : y - boxH - 2;
+      const box = { x: bx, y: rawY, w: approxW, h: boxH };
+      if (hitsForbidden(box, obstacles, [], 6)) {
+        const env = envelopeForSpan(bx, approxW, obstacles);
+        if (env.hit) {
+          const up = env.top - 4 - boxH;
+          const dn = env.bottom + 4;
+          box.y = (up >= 4 && !hitsForbidden({ ...box, y: up }, obstacles, [], 6))
+            ? up
+            : Math.min(h - 26, dn);
+        }
       }
-    }
-    if (hitsForbidden(box, obstacles, [], 4)) return;
-    parts.push(
-      `<text x="${box.x + 2}" y="${box.y + 10}" fill="${color}" fill-opacity="0.75" font-size="9" font-family="JetBrains Mono, monospace">${escapeXml(text)}</text>`
-    );
-  };
-
-  if (yResist != null && yResist >= 8 && yResist <= h - 22) {
-    parts.push(
-      `<line x1="${dividerX}" y1="${yResist}" x2="${guideEnd}" y2="${yResist}" stroke="#ff4d4d" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`
-    );
-    levelLabel(
-      t('chart.resistance', { price: formatPrice(forecastLevels.resistance, quote.value?.currency) }),
-      yResist,
-      '#ff4d4d',
-      false
-    );
-  }
-  if (ySupport != null && ySupport >= 8 && ySupport <= h - 22) {
-    parts.push(
-      `<line x1="${dividerX}" y1="${ySupport}" x2="${guideEnd}" y2="${ySupport}" stroke="#00d488" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`
-    );
-    levelLabel(
-      t('chart.support', { price: formatPrice(forecastLevels.support, quote.value?.currency) }),
-      ySupport,
-      '#00d488',
-      true
-    );
-  }
-
-  const turnDays = new Set(forecastTurns.filter(tr => tr.day > 0).map(tr => tr.day));
-
-  forecastBars.forEach((bar, i) => {
-    const x = ts.logicalToCoordinate(lastLogical + 1 + i);
-    if (x == null) return;
-
-    const yOpen = candleSeries.priceToCoordinate(bar.open);
-    const yClose = candleSeries.priceToCoordinate(bar.close);
-    const yHigh = candleSeries.priceToCoordinate(bar.high);
-    const yLow = candleSeries.priceToCoordinate(bar.low);
-    if ([yOpen, yClose, yHigh, yLow].some(v => v == null)) return;
-
-    const up = bar.close >= bar.open;
-    const color = up ? '#00d488' : '#ff4d4d';
-    const fill = up ? 'rgba(0,212,136,0.18)' : 'rgba(255,77,77,0.18)';
-    const top = Math.min(yOpen, yClose);
-    const bodyH = Math.max(Math.abs(yClose - yOpen), strokeW);
-    const style = bar.horizon ? HORIZON_STYLE[bar.horizon] : null;
-    const labelY = (up || yHigh < fontPx + 6) ? yHigh - labelGap : yLow + labelGap + fontPx;
-
-    parts.push(
-      `<line x1="${x}" y1="${yHigh}" x2="${x}" y2="${yLow}" stroke="${color}" stroke-width="${strokeW}" stroke-opacity="0.55" />`,
-      `<rect x="${x - candleW / 2}" y="${top}" width="${candleW}" height="${bodyH}" fill="${fill}" stroke="${color}" stroke-width="${strokeW}" />`
-    );
-    if (fontPx && style && !turnDays.has(bar.day)) {
+      if (hitsForbidden(box, obstacles, [], 4)) return;
       parts.push(
-        `<text x="${x}" y="${labelY}" fill="${style.color}" font-size="${fontPx}" font-family="JetBrains Mono, monospace" text-anchor="middle">${style.label}</text>`
+        `<text x="${box.x + 2}" y="${box.y + 10}" fill="${color}" fill-opacity="0.75" font-size="9" font-family="JetBrains Mono, monospace">${escapeXml(text)}</text>`
+      );
+    };
+
+    if (yResist != null && yResist >= 8 && yResist <= h - 22) {
+      parts.push(
+        `<line x1="${dividerX}" y1="${yResist}" x2="${guideEnd}" y2="${yResist}" stroke="#ff4d4d" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`
+      );
+      levelLabel(
+        t('chart.resistance', { price: formatPrice(forecastLevels.resistance, quote.value?.currency) }),
+        yResist,
+        '#ff4d4d',
+        false
       );
     }
-  });
+    if (ySupport != null && ySupport >= 8 && ySupport <= h - 22) {
+      parts.push(
+        `<line x1="${dividerX}" y1="${ySupport}" x2="${guideEnd}" y2="${ySupport}" stroke="#00d488" stroke-opacity="0.28" stroke-dasharray="4 3" stroke-width="1" />`
+      );
+      levelLabel(
+        t('chart.support', { price: formatPrice(forecastLevels.support, quote.value?.currency) }),
+        ySupport,
+        '#00d488',
+        true
+      );
+    }
+  }
+
+  if (hasForecast) {
+    const turnDays = new Set(forecastTurns.filter(tr => tr.day > 0).map(tr => tr.day));
+    forecastBars.forEach((bar, i) => {
+      const x = ts.logicalToCoordinate(lastLogical + 1 + i);
+      if (x == null) return;
+
+      const yOpen = candleSeries.priceToCoordinate(bar.open);
+      const yClose = candleSeries.priceToCoordinate(bar.close);
+      const yHigh = candleSeries.priceToCoordinate(bar.high);
+      const yLow = candleSeries.priceToCoordinate(bar.low);
+      if ([yOpen, yClose, yHigh, yLow].some(v => v == null)) return;
+
+      const up = bar.close >= bar.open;
+      const color = up ? '#00d488' : '#ff4d4d';
+      const fill = up ? 'rgba(0,212,136,0.18)' : 'rgba(255,77,77,0.18)';
+      const top = Math.min(yOpen, yClose);
+      const bodyH = Math.max(Math.abs(yClose - yOpen), strokeW);
+      const style = bar.horizon ? HORIZON_STYLE[bar.horizon] : null;
+      const labelY = (up || yHigh < fontPx + 6) ? yHigh - labelGap : yLow + labelGap + fontPx;
+
+      parts.push(
+        `<line x1="${x}" y1="${yHigh}" x2="${x}" y2="${yLow}" stroke="${color}" stroke-width="${strokeW}" stroke-opacity="0.55" />`,
+        `<rect x="${x - candleW / 2}" y="${top}" width="${candleW}" height="${bodyH}" fill="${fill}" stroke="${color}" stroke-width="${strokeW}" />`
+      );
+      if (fontPx && style && !turnDays.has(bar.day)) {
+        parts.push(
+          `<text x="${x}" y="${labelY}" fill="${style.color}" font-size="${fontPx}" font-family="JetBrains Mono, monospace" text-anchor="middle">${style.label}</text>`
+        );
+      }
+    });
+  }
 
   const placed = [];
-  forecastTurns.forEach((turn, idx) => {
+  newsMarks.forEach((mark) => {
+    const x = ts.timeToCoordinate(mark.time);
+    const y = candleSeries.priceToCoordinate(mark.price);
+    if (x == null || y == null) return;
+    const color = mark.dir > 0 ? '#00d488' : '#ff4d4d';
+    const tag = mark.event || (mark.dir > 0 ? t('chart.pumpedTag') : t('chart.dumpedTag'));
+    const why = mark.title && mark.title !== mark.event ? mark.title : '';
+    const lines = [...(tag ? [tag] : []), ...wrapWhy(why, 24)].filter(Boolean);
+    const lineH = 11;
+    const padX = 6;
+    const padY = 4;
+    const boxW = Math.min(168, Math.max(72, ...lines.map(l => l.length * 6.15 + padX * 2)));
+    const boxH = lines.length * lineH + padY * 2;
+    const placedAt = placeCallout({
+      anchorX: x,
+      anchorY: y,
+      boxW,
+      boxH,
+      preferAbove: mark.dir > 0,
+      obstacles,
+      placed,
+      w,
+      h
+    });
+    if (!placedAt) return;
+    const box = placedAt.box;
+    placed.push(box);
+    obstacles.push({ ...box });
+    const tipX = Math.max(box.x + 8, Math.min(x, box.x + box.w - 8));
+    const tipY = (box.y + box.h <= y) ? box.y + box.h : box.y;
+    const href = (() => {
+      try {
+        const u = new URL(String(mark.url || '').trim());
+        return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : '';
+      } catch { return ''; }
+    })();
+    const body = [
+      `<line x1="${x}" y1="${y}" x2="${tipX}" y2="${tipY}" stroke="${color}" stroke-opacity="0.45" stroke-width="1" />`,
+      `<polygon points="${x},${y - 5} ${x + 4.5},${y + 3.5} ${x - 4.5},${y + 3.5}" fill="${color}" />`,
+      `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="rgba(13,17,23,0.92)" stroke="${color}" stroke-opacity="0.55" />`,
+      ...lines.map((line, i) => (
+        `<text x="${box.x + padX}" y="${box.y + padY + (i + 0.78) * lineH}" fill="${i === 0 ? color : '#c9d1d9'}" font-size="10" font-family="JetBrains Mono, monospace">${escapeXml(line)}</text>`
+      ))
+    ].join('');
+    parts.push(href
+      ? `<a href="${escapeXml(href)}" target="_blank" rel="noopener noreferrer" style="pointer-events:auto">${body}</a>`
+      : body
+    );
+  });
+  if (hasForecast) forecastTurns.forEach((turn, idx) => {
     if (!turn.why) return;
     const x = turn.day <= 0
       ? lastX
@@ -1155,6 +1317,7 @@ function renderData() {
   if (!candles.length) {
     candleSeries.setData([]);
     volumeSeries.setData([]);
+    newsMarks = [];
     clearPredictionOverlay();
     return;
   }
@@ -1162,6 +1325,7 @@ function renderData() {
   candleSeries.setData(candles);
   volumeSeries.setData(volumes);
   lastBar = { ...candles[candles.length - 1] };
+  rebuildNewsMarks(candles, isIntraday);
   applyPredictionOverlay(candles);
   chart.timeScale().fitContent();
   applyRightPad();
@@ -1224,6 +1388,7 @@ watch(() => props.symbol, async (sym) => {
   loadGeneration++;
   clearAutoRetry();
   retryAttempt.value = 0;
+  newsStore.fetchStockNews(sym, marketStore.selectedQuote?.name);
   await loadTimeframe(activeTimeframe());
   if (chart && candleSeries) renderData();
 }, { immediate: true });
@@ -1258,8 +1423,21 @@ watch(
   () => currentLocale(),
   () => {
     if (!chart || !candleSeries) return;
-    applyPredictionOverlay(mappedCandles().candles);
+    const { candles, isIntraday } = mappedCandles();
+    rebuildNewsMarks(candles, isIntraday);
+    applyPredictionOverlay(candles);
     applyRightPad();
+    paintForecastOverlay();
+  }
+);
+
+watch(
+  () => newsStore.stockArticles,
+  () => {
+    if (!chart || !candleSeries) return;
+    const { candles, isIntraday } = mappedCandles();
+    rebuildNewsMarks(candles, isIntraday);
+    applyScaleForForecast(forecastBars);
     paintForecastOverlay();
   }
 );

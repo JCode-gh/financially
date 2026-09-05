@@ -378,6 +378,11 @@ export default {
     shrink: 'Grafiek sluiten',
     support: 'Steun {price}',
     resistance: 'Weerstand {price}',
+    news: 'Nieuws',
+    pumped: 'Omhoog — {why}',
+    dumped: 'Omlaag — {why}',
+    pumpedTag: 'Omhoog',
+    dumpedTag: 'Omlaag',
     turn: {
       up: 'Start omhoog — {why}',
       down: 'Start omlaag — {why}',

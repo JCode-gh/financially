@@ -378,6 +378,11 @@ export default {
     shrink: 'Exit full chart',
     support: 'Support {price}',
     resistance: 'Resistance {price}',
+    news: 'News',
+    pumped: 'Pumped — {why}',
+    dumped: 'Dumped — {why}',
+    pumpedTag: 'Pumped',
+    dumpedTag: 'Dumped',
     turn: {
       up: 'Starts up — {why}',
       down: 'Starts down — {why}',

@@ -44,13 +44,13 @@ export async function getMarketNews(category = 'general') {
 
 export async function getStockNews(ticker) {
   const today = new Date().toISOString().split('T')[0];
-  // 14-day window so the sentiment engine can compare today's article flow
-  // against a real baseline (buzz detection) and apply recency decay.
-  const from = new Date(Date.now() - 14 * 86400000).toISOString().split('T')[0];
+  // 90-day window so the chart can mark pumps/dumps on recent history, not
+  // only the last two weeks, while sentiment still has a recency baseline.
+  const from = new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
   return cached(`stock_news_${ticker}`, 300_000, async () => {
     const data = await get('/company-news', { symbol: ticker, from, to: today });
     if (!data) return [];
-    return data.slice(0, 40).map(n => ({
+    return data.slice(0, 80).map(n => ({
       id: n.id,
       headline: n.headline,
       summary: n.summary,
